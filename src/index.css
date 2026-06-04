@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <!-- Chống zoom và tối ưu mobile -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <title>Ozpro Portal | FLR & SGB Manager</title>
+
+    <!-- Thêm font chữ Inter để giao diện nhìn mượt hơn -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700;900&display=swap" rel="stylesheet">
+
+    <style>
+      body {
+        margin: 0;
+        background-color: #000000; /* Đảm bảo nền đen đồng nhất khi load trang */
+        font-family: 'Inter', sans-serif;
+      }
+      /* Tắt hiệu ứng highlight màu xanh khi chạm vào nút trên mobile */
+      * {
+        -webkit-tap-highlight-color: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

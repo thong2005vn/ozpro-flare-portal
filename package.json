@@ -1,0 +1,33 @@
+{
+  "name": "flr-dapp1",
+  "version": "1.0.0",
+  "private": true,
+  "main": "electron.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron": "electron .",
+    "dist": "vite build && electron ."
+  },
+  "dependencies": {
+    "@reown/appkit": "^1.8.19",
+    "@reown/appkit-adapter-ethers": "^1.8.19",
+    "@walletconnect/ethereum-provider": "^2.23.9",
+    "@web3modal/ethers": "^4.2.3",
+    "ethers": "^6.16.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-qr-code": "^2.0.21"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.28",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@vitejs/plugin-react-oxc": "^0.4.3",
+    "electron": "^42.0.1",
+    "vite": "^7.0.0"
+  }
+}
