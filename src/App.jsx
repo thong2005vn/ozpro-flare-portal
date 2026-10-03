@@ -3,42 +3,64 @@ import { ethers } from "ethers";
 import { QRCodeSVG } from "qrcode.react";
 import { createWeb3Modal, defaultConfig } from "@web3modal/ethers/react";
 import SwapModal from "./components/SwapModal";
-// --- SDK CHÍNH THỨC CỦA FLARE ĐỂ THAO TÁC P-CHAIN (STAKING) ---
-// Cài đặt: npm install @flarenetwork/flare-tx-sdk
+// SDK chính thức của Flare để thao tác P-Chain (staking)
 import { Network, EIP1193WalletController, Amount } from "@flarenetwork/flare-tx-sdk";
-// --- IMPORT TỪ FILE CONSTANTS ---
 import {
   WNAT, REWARD_MANAGER, CLAIM_SETUP_MANAGER, CYCLE_SECONDS,
   FLARE_PARAMS, COLORS, PROVIDERS, styles
 } from "./constants";
-// --- QUỐC HUY: dùng ở đầu trang, trong HELP modal, và làm nền màn hình chờ giao dịch ---
 import quocHuyImg from "./assets/quoc-huy.png";
+import { useLanguage } from "./i18n";
 
-// --- MẠNG FLARE DÙNG CHO SDK STAKING (P-CHAIN) ---
-const flrNetwork = Network.FLARE;
-// Endpoint RPC của P-Chain trên Flare mainnet (đúng chuẩn chính thức, KHÔNG suy diễn từ URL C-Chain
-// vì 2 endpoint có định dạng khác nhau: C-Chain là "/ext/C/rpc", P-Chain là "/ext/bc/P")
-const P_CHAIN_RPC = "https://flare-api.flare.network/ext/bc/P";
-// Subnet ID của Primary Network trên mọi mạng Avalanche/Flare (hằng số cố định)
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const FLR_NETWORK = Network.FLARE;
+// C-Chain dùng "/ext/C/rpc", P-Chain dùng "/ext/bc/P" — hai endpoint khác định dạng, không suy ra lẫn nhau
+
+// Danh sách RPC P-Chain (thử lần lượt). "flare-api.flare.network" là node chính thức, miễn phí, không cần
+// API key cho các API platform.* (getStake, getCurrentValidators...). Nếu có node dự phòng riêng, chỉ cần
+// thêm URL vào mảng — fetchPChainRPC() sẽ tự thử lần lượt.
+const P_CHAIN_RPC_URLS = [
+  "https://flare-api.flare.network/ext/bc/P"
+  // "https://<endpoint-du-phong-cua-ban>/ext/bc/P", // thêm vào đây nếu có node dự phòng
+];
 const PRIMARY_SUBNET_ID = "11111111111111111111111111111111LpoYY";
-// Ràng buộc thực tế của Flare P-Chain staking
-const MIN_STAKE_FLR = 50000; // Tối thiểu 50,000 FLR mỗi lần stake cho 1 validator
-const MIN_STAKE_DAYS = 14; // Tối thiểu 14 ngày
+const MIN_STAKE_FLR = 50_000;
+const MIN_STAKE_DAYS = 14;
+const FLARE_CHAIN_ID_HEX = "0xe";
+const FLARE_EPOCH_ANCHOR = 1672945200;
+const VALIDATOR_NAMES_URL = "https://raw.githubusercontent.com/flare-foundation/reward-scripts/main/ftso-address.csv";
 
-// --- THÊM STYLE MÀU VÀNG KIM LOẠI ---
-const goldGradientBg = 'linear-gradient(to bottom, #8A641C 0%, #F4D573 25%, #9A761C 50%, #FFF1A0 75%, #7B5611 100%)';
+const USDT0_ADDRESS = "0xe7cd86e13AC4309349F30B3435a9d337750fC82D";
+const USDT_ADDRESS = "0x0B38e83B86d491735fEaa0a791F65c2B99535396";
+
+// FlareCat (FCAT) trên Flare — địa chỉ token lấy từ trang chính thức flarecat.xyz
+const FCAT_ADDRESS = "0xbF6d832350c5FB787d3822841dC930C5ebdbb888";
+const FCAT_COLOR = "#FF8A3D";
+
+// Tin tức sống cho thanh ticker: chỉ lấy tiêu đề + nguồn + link (không sao chép nội dung bài báo).
+// Kiểm tra lại URL RSS còn sống trước khi dùng thật.
+const NEWS_FEEDS = [
+  { source: "Cointelegraph", url: "https://cointelegraph.com/rss" },
+  { source: "CoinDesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/" }
+];
+// Chỉ giữ tin liên quan hệ sinh thái Flare. Muốn nhiều tin hơn có thể thêm "xrp" (sẽ nhiễu hơn).
+const NEWS_KEYWORDS = ["flare", "flr", "fxrp", "ftso"];
+const NEWS_REFRESH_MS = 5 * 60_000;
+
+const goldGradientBg = "linear-gradient(to bottom, #8A641C 0%, #F4D573 25%, #9A761C 50%, #FFF1A0 75%, #7B5611 100%)";
 const goldTextStyle = {
   background: goldGradientBg,
-  WebkitBackgroundClip: 'text',
-  WebkitTextFillColor: 'transparent',
-  backgroundClip: 'text',
-  color: 'transparent'
+  WebkitBackgroundClip: "text",
+  WebkitTextFillColor: "transparent",
+  backgroundClip: "text",
+  color: "transparent"
 };
-const SOLID_GOLD = '#F4D573';
-// --- MÀU ACCENT RIÊNG CHO KHỐI STAKING FLR (P-CHAIN) ---
-const STAKE_COLOR = '#00C2FF';
+const SOLID_GOLD = "#F4D573";
+const STAKE_COLOR = "#00C2FF";
 
-// 🌐 CẤU HÌNH WEB3MODAL
 const projectId = "60e0395fcb2e23586895a5b421c97875";
 const metadata = {
   name: "FLARE VN PORTAL",
@@ -46,7 +68,6 @@ const metadata = {
   url: typeof window !== "undefined" ? window.location.origin : "http://localhost:5173",
   icons: ["https://avatars.githubusercontent.com/u/37784886"]
 };
-
 const flareNetworkConfig = {
   chainId: FLARE_PARAMS.chainId,
   name: FLARE_PARAMS.chainName,
@@ -54,26 +75,64 @@ const flareNetworkConfig = {
   explorerUrl: FLARE_PARAMS.blockExplorerUrls[0],
   rpcUrl: FLARE_PARAMS.rpcUrls[0]
 };
-
 const modal = createWeb3Modal({
   ethersConfig: defaultConfig({ metadata, enableEIP6963: true, enableInjected: true, enableCoinbase: false }),
-  chains: [flareNetworkConfig], projectId, enableAnalytics: false, themeMode: 'dark',
-  themeVariables: { '--w3m-z-index': '9999' }
+  chains: [flareNetworkConfig],
+  projectId,
+  enableAnalytics: false,
+  themeMode: "dark",
+  themeVariables: { "--w3m-z-index": "9999" }
 });
 
-// --- HẰNG SỐ SMART CONTRACT TOKEN ---
-const USDT0_ADDRESS = "0xe7cd86e13AC4309349F30B3435a9d337750fC82D";
-// Địa chỉ USDT (bridged qua Stargate) trên Flare Mainnet — lấy từ trang chính thức fair.flare.network.
-// ⚠️ QUAN TRỌNG: đây là token liên quan tiền thật — trước khi deploy production, tự kiểm tra lại địa chỉ này
-// trên flare-explorer.flare.network để chắc chắn 100% trước khi cho người dùng giao dịch.
-const USDT_ADDRESS = "0x0B38e83B86d491735fEaa0a791F65c2B99535396";
+const ABI = {
+  pdaOwner: ["function owner() view returns (address)"],
+  wnat: [
+    "function balanceOf(address) view returns (uint256)",
+    "function delegatesOf(address) view returns (address[], uint256[], uint256, uint256)",
+    "function deposit() payable",
+    "function withdraw(uint256)",
+    "function transfer(address,uint256)"
+  ],
+  rewardManager: [
+    "function getStateOfRewards(address) view returns (tuple(uint24, bytes20, uint120, uint8, bool)[][])",
+    "function claim(address,address,uint24,bool,tuple(bytes32[],tuple(uint24,bytes20,uint120,uint8))[])",
+    "function getRewardEpochIdsWithClaimableRewards() view returns (uint24,uint24)"
+  ],
+  erc20Balance: ["function balanceOf(address) view returns (uint256)"],
+  csm: [
+    "function accountToDelegationAccount(address) view returns (address)",
+    "function enableDelegationAccount() external returns (address)",
+    "function withdraw(uint256) external",
+    "function delegate(address,uint256) external",
+    "function undelegateAll() external"
+  ]
+};
 
-// --- HELPER LẤY THÔNG BÁO LỖI TƯƠNG THÍCH ETHERS V6 ---
-// ethers v6 không trả lỗi qua field "reason" như v5 nữa; ưu tiên shortMessage / info.error.message
-// trước khi rơi về "reason" (giữ lại để tương thích ngược) rồi mới tới "message" chung chung.
-const getErrMsg = (e) => e?.shortMessage || e?.info?.error?.message || e?.reason || e?.message || "thất bại";
+// ============================================================================
+// HELPERS
+// ============================================================================
 
-// --- UI HELPERS & COMPONENTS ---
+const getErrMsg = (e) => e?.shortMessage || e?.info?.error?.message || e?.reason || e?.message || "failed";
+
+const shadeColor = (hex, percent) => {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const num = parseInt(h, 16);
+  let r = (num >> 16) + percent;
+  let g = ((num >> 8) & 0x00ff) + percent;
+  let b = (num & 0x0000ff) + percent;
+  r = Math.max(Math.min(255, r), 0);
+  g = Math.max(Math.min(255, g), 0);
+  b = Math.max(Math.min(255, b), 0);
+  return "#" + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
+};
+
+// Tạo dải gradient ánh kim từ chính màu gốc, không đổi tông màu
+const shineGradient = (hex) => {
+  if (!hex || typeof hex !== "string" || !hex.startsWith("#")) return hex;
+  return `linear-gradient(to bottom, ${shadeColor(hex, 50)} 0%, ${shadeColor(hex, 15)} 25%, ${hex} 50%, ${shadeColor(hex, -20)} 75%, ${shadeColor(hex, -45)} 100%)`;
+};
+
 const renderCountdown = (seconds) => {
   const d = Math.floor(seconds / (3600 * 24));
   const h = Math.floor((seconds % (3600 * 24)) / 3600);
@@ -81,41 +140,38 @@ const renderCountdown = (seconds) => {
   const s = seconds % 60;
   const pad = (n) => n.toString().padStart(2, "0");
   return (
-    <div style={{ display: 'flex', gap: '6px', alignItems: 'baseline', fontFamily: 'monospace' }}>
-      <span>{pad(d)}</span><small style={{ fontSize: '10px', color: COLORS.TEXT_MUTE, marginRight: '2px' }}>d</small>
-      <span>{pad(h)}</span><small style={{ fontSize: '10px', color: COLORS.TEXT_MUTE, marginRight: '2px' }}>h</small>
-      <span>{pad(m)}</span><small style={{ fontSize: '10px', color: COLORS.TEXT_MUTE, marginRight: '2px' }}>m</small>
-      <span style={{ color: COLORS.PINK }}>{pad(s)}</span><small style={{ fontSize: '10px', color: COLORS.TEXT_MUTE }}>s</small>
+    <div style={{ display: "flex", gap: "6px", alignItems: "baseline", fontFamily: "monospace" }}>
+      <span>{pad(d)}</span><small style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, marginRight: "2px" }}>d</small>
+      <span>{pad(h)}</span><small style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, marginRight: "2px" }}>h</small>
+      <span>{pad(m)}</span><small style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, marginRight: "2px" }}>m</small>
+      <span style={{ color: COLORS.PINK }}>{pad(s)}</span><small style={{ fontSize: "10px", color: COLORS.TEXT_MUTE }}>s</small>
     </div>
   );
 };
 
-// --- HIỆU ỨNG ÓNG ÁNH (SHINE) DÙNG CHUNG CHO MỌI MÀU NÚT ---
-// Tạo dải gradient sáng-tối từ CHÍNH màu gốc của nút (không đổi màu, chỉ thêm ánh kim)
-const shadeColor = (hex, percent) => {
-  let h = hex.replace('#', '');
-  if (h.length === 3) h = h.split('').map(c => c + c).join('');
-  const num = parseInt(h, 16);
-  let r = (num >> 16) + percent;
-  let g = ((num >> 8) & 0x00FF) + percent;
-  let b = (num & 0x0000FF) + percent;
-  r = Math.max(Math.min(255, r), 0);
-  g = Math.max(Math.min(255, g), 0);
-  b = Math.max(Math.min(255, b), 0);
-  return "#" + (0x1000000 + r * 0x10000 + g * 0x100 + b).toString(16).slice(1);
-};
-const shineGradient = (hex) => {
-  if (!hex || typeof hex !== 'string' || !hex.startsWith('#')) return hex; // vd: "transparent" giữ nguyên
-  return `linear-gradient(to bottom, ${shadeColor(hex, 50)} 0%, ${shadeColor(hex, 15)} 25%, ${hex} 50%, ${shadeColor(hex, -20)} 75%, ${shadeColor(hex, -45)} 100%)`;
+const formatCurrentTime = (date) => {
+  const pad = (n) => n.toString().padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
 };
 
-const GlowButton = ({ onClick, disabled, baseColor, textColor = 'white', hoverTextColor, customStyle, children }) => {
+// FCAT có giá rất nhỏ (~0.0003): giữ 4 chữ số có nghĩa thay vì in số thô
+const formatTinyPrice = (n) => {
+  if (!n) return "0";
+  if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+  return n.toLocaleString(undefined, { maximumSignificantDigits: 4, maximumFractionDigits: 12 });
+};
+
+// ============================================================================
+// SHARED UI COMPONENTS
+// ============================================================================
+
+const GlowButton = ({ onClick, disabled, baseColor, textColor = "white", hoverTextColor, customStyle, children }) => {
   const gradient = shineGradient(baseColor);
   return (
     <button
       onClick={onClick}
       disabled={disabled}
-      style={{ ...styles.btnBase, background: gradient, color: textColor, ...(disabled ? { opacity: 0.5, cursor: 'not-allowed' } : {}), ...customStyle }}
+      style={{ ...styles.btnBase, background: gradient, color: textColor, ...(disabled ? { opacity: 0.5, cursor: "not-allowed" } : {}), ...customStyle }}
       onMouseOver={(e) => {
         if (disabled) return;
         e.currentTarget.style.background = "transparent";
@@ -136,179 +192,553 @@ const GlowButton = ({ onClick, disabled, baseColor, textColor = 'white', hoverTe
   );
 };
 
+// Nút hành động lớn với viền màu riêng + hiệu ứng "///" ở góc, dùng cho 2 nút nạp (PDA / P-Chain)
+const AccentActionButton = ({ onClick, disabled, accentColor, label }) => (
+  <button
+    onClick={onClick}
+    disabled={disabled}
+    style={{
+      ...styles.btnBase,
+      width: "100%",
+      padding: "15px",
+      background: COLORS.PINK,
+      color: "white",
+      border: `3px solid ${accentColor}`,
+      position: "relative",
+      overflow: "hidden",
+      ...(disabled ? { opacity: 0.5, cursor: "not-allowed" } : {})
+    }}
+    onMouseOver={(e) => {
+      if (disabled) return;
+      e.currentTarget.style.background = "transparent";
+      e.currentTarget.style.color = accentColor;
+      e.currentTarget.style.boxShadow = `0 0 15px ${accentColor}88`;
+    }}
+    onMouseOut={(e) => {
+      if (disabled) return;
+      e.currentTarget.style.background = COLORS.PINK;
+      e.currentTarget.style.color = "white";
+      e.currentTarget.style.boxShadow = "none";
+    }}
+  >
+    <span style={{ position: "absolute", top: -6, right: 6, display: "flex", fontSize: 34, fontWeight: "900", color: accentColor, opacity: 0.85, lineHeight: 1, letterSpacing: "-6px" }}>///</span>
+    <span style={{ position: "relative", zIndex: 1 }}>{label}</span>
+  </button>
+);
+
+const RewardClaimBox = ({ message, amount, onClaim, baseColor, textColor = "black", pulse = false }) => (
+  <div style={{
+    background: "#0a0a0a",
+    border: `1px solid ${baseColor}88`,
+    borderRadius: 10,
+    padding: "10px 12px",
+    marginBottom: 14,
+    ...(pulse ? { animation: "rewardClaimPulse 1.6s ease-in-out infinite" } : {})
+  }}>
+    <div style={{ fontSize: 11, color: COLORS.TEXT_MUTE, marginBottom: 8 }}>{message}</div>
+    <GlowButton onClick={onClaim} baseColor={baseColor} textColor={textColor} customStyle={{ width: "100%", padding: "13px", fontSize: 14, fontWeight: 900 }}>
+      {amount}
+    </GlowButton>
+  </div>
+);
+
 const useCryptoPrices = () => {
-  const [prices, setPrices] = useState({ btc: 0, eth: 0, xrp: 0, flr: 0, sgb: 0, ltc: 0, doge: 0, cmc20: 0 });
+  const [prices, setPrices] = useState({ btc: 0, eth: 0, xrp: 0, flr: 0, sgb: 0, ltc: 0, doge: 0, cmc20: 0, flrChange24h: 0 });
+  // Flash màu xanh/đỏ trên Price Tag của FLR mỗi khi giá vừa cập nhật đổi khác lần poll trước
+  const [flrFlash, setFlrFlash] = useState(null); // 'up' | 'down' | null
+  const prevFlrRef = useRef(null);
+  const flashTimerRef = useRef(null);
+  // Giá FCAT lấy riêng từ DexScreener theo địa chỉ token (CoinGecko không có sẵn cho token này)
+  const [fcat, setFcat] = useState({ price: 0, change24h: 0 });
+
   useEffect(() => {
+    let cancelled = false;
     const getAllPrices = async () => {
       try {
-        // "coinmarketcap-20-index-dtf" = chỉ số CMC20 (CoinMarketCap 20 Index DTF) theo dõi top 20 coin theo vốn hóa
         const ids = "bitcoin,ethereum,ripple,flare-networks,songbird,litecoin,dogecoin,coinmarketcap-20-index-dtf";
-        const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`);
+        const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`);
         const data = await res.json();
+        if (cancelled) return;
+
+        const newFlr = data["flare-networks"]?.usd || 0;
+        if (prevFlrRef.current != null && newFlr !== prevFlrRef.current) {
+          setFlrFlash(newFlr > prevFlrRef.current ? "up" : "down");
+          clearTimeout(flashTimerRef.current);
+          flashTimerRef.current = setTimeout(() => setFlrFlash(null), 1200);
+        }
+        prevFlrRef.current = newFlr;
+
         setPrices({
-          btc: data["bitcoin"]?.usd || 0, eth: data["ethereum"]?.usd || 0, xrp: data["ripple"]?.usd || 0,
-          flr: data["flare-networks"]?.usd || 0, sgb: data["songbird"]?.usd || 0,
-          ltc: data["litecoin"]?.usd || 0, doge: data["dogecoin"]?.usd || 0,
-          cmc20: data["coinmarketcap-20-index-dtf"]?.usd || 0
+          btc: data.bitcoin?.usd || 0,
+          eth: data.ethereum?.usd || 0,
+          xrp: data.ripple?.usd || 0,
+          flr: newFlr,
+          sgb: data.songbird?.usd || 0,
+          ltc: data.litecoin?.usd || 0,
+          doge: data.dogecoin?.usd || 0,
+          cmc20: data["coinmarketcap-20-index-dtf"]?.usd || 0,
+          flrChange24h: data["flare-networks"]?.usd_24h_change || 0
         });
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        console.error("Lỗi lấy giá crypto:", e);
+      }
     };
     getAllPrices();
-    const interval = setInterval(getAllPrices, 60000);
-    return () => clearInterval(interval);
+    const interval = setInterval(getAllPrices, 60_000);
+    return () => { cancelled = true; clearInterval(interval); clearTimeout(flashTimerRef.current); };
   }, []);
-  return prices;
+
+  // Effect riêng cho FCAT: nếu DexScreener lỗi thì giá các coin khác không bị ảnh hưởng
+  useEffect(() => {
+    let cancelled = false;
+    const getFcat = async () => {
+      try {
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${FCAT_ADDRESS}`);
+        const data = await res.json();
+        if (cancelled) return;
+        // Chỉ lấy pool trên Flare mà FCAT là base token, chọn pool thanh khoản cao nhất
+        const best = (data?.pairs || [])
+          .filter((p) => p.chainId === "flare" && p.baseToken?.address?.toLowerCase() === FCAT_ADDRESS.toLowerCase())
+          .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
+        if (best) setFcat({ price: Number(best.priceUsd) || 0, change24h: Number(best.priceChange?.h24) || 0 });
+      } catch (e) {
+        console.error("Lỗi lấy giá FCAT:", e);
+      }
+    };
+    getFcat();
+    const interval = setInterval(getFcat, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
+
+  return { prices, flrFlash, fcat };
 };
 
-// --- MAIN COMPONENT ---
+// Tin tức sống từ RSS (qua rss2json để tránh CORS). Mỗi feed lỗi riêng lẻ không làm hỏng các feed còn lại.
+// Khi chạy thật nên thay bằng endpoint serverless của riêng bạn (ổn định, không lệ thuộc bên thứ ba).
+const useLiveNews = (max = 2) => {
+  const [news, setNews] = useState([]); // [{ title, link, source, time }]
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const results = await Promise.all(
+          NEWS_FEEDS.map(async (f) => {
+            try {
+              const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(f.url)}`);
+              const data = await res.json();
+              return (data?.items || []).map((i) => ({
+                title: String(i.title || "").trim(),
+                link: i.link,
+                source: f.source,
+                time: new Date(i.pubDate).getTime() || 0
+              }));
+            } catch {
+              return [];
+            }
+          })
+        );
+        const filtered = results
+          .flat()
+          .filter((n) => n.title && /^https?:\/\//.test(n.link || "") && NEWS_KEYWORDS.some((k) => n.title.toLowerCase().includes(k)))
+          .sort((a, b) => b.time - a.time)
+          .slice(0, max);
+        // Chỉ ghi đè khi có kết quả, nếu không thì giữ tin cũ / tin dự phòng
+        if (!cancelled && filtered.length > 0) setNews(filtered);
+      } catch (e) {
+        console.error("Lỗi lấy tin tức:", e);
+      }
+    };
+    load();
+    const interval = setInterval(load, NEWS_REFRESH_MS);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [max]);
+
+  return news;
+};
+
+// ============================================================================
+// MAIN COMPONENT
+// ============================================================================
+
 export default function FlarePortal() {
+  const { lang, toggleLang, t, tList } = useLanguage();
+
+  // --- Wallet / network ---
   const [account, setAccount] = useState("");
+  const [walletType, setWalletType] = useState("");
+  const [customEthersProvider, setCustomEthersProvider] = useState(null);
+  const [isFlrNetworkAdded, setIsFlrNetworkAdded] = useState(true);
+
+  // --- Main wallet + PDA ---
   const [pdaAddress, setPdaAddress] = useState("");
   const [isActivated, setIsActivated] = useState(false);
   const [balances, setBalances] = useState({ flr: "0", wflr: "0", pdaWflr: "0", reward: "0" });
   const [usdt0Balance, setUsdt0Balance] = useState("0");
-  const [usdtBalance, setUsdtBalance] = useState("0"); // Số dư USDT (bridged) — hiển thị song song với USDT₮0
+  const [usdtBalance, setUsdtBalance] = useState("0");
   const [delegations, setDelegations] = useState([]);
   const [walletAmount, setWalletAmount] = useState("");
   const [pdaAmount, setPdaAmount] = useState("");
-  const [status, setStatus] = useState("Sẵn sàng");
   const [providerSearch, setProviderSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
   const [pendingProvider, setPendingProvider] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(0);
 
-  // --- STATE CHO KHỐI STAKING FLR (P-CHAIN) ---
-  const [pChainPublicKey, setPChainPublicKey] = useState(""); // Public key dùng để suy ra địa chỉ P-Chain thật
+  // --- P-Chain staking ---
+  const [pChainPublicKey, setPChainPublicKey] = useState("");
   const [pChainAddress, setPChainAddress] = useState("");
-  const [pChainBalance, setPChainBalance] = useState("0"); // Số dư đã nạp vào Pchain nhưng chưa stake
-  const [stakedAmount, setStakedAmount] = useState("0"); // Số lượng đang staking
+  const [pChainBalance, setPChainBalance] = useState("0"); // đã nạp vào P-Chain nhưng chưa stake
+  const [stakedAmount, setStakedAmount] = useState("0");
   const [stakeAmount, setStakeAmount] = useState("");
-  const [stakeDays, setStakeDays] = useState(String(MIN_STAKE_DAYS)); // Thời hạn stake (ngày), tối thiểu 14
-  const [stakeProviders, setStakeProviders] = useState([]); // Tối đa 2 validator (NodeID) đã chọn
+  const [stakeDays, setStakeDays] = useState(String(MIN_STAKE_DAYS));
+  const [stakeProviders, setStakeProviders] = useState([]); // tối đa 2 validator
+  const [stakingTab, setStakingTab] = useState("overview"); // "overview" | "new"
+  const [manualNodeSearch, setManualNodeSearch] = useState("");
   const [stakeProviderSearch, setStakeProviderSearch] = useState("");
   const [showStakeDropdown, setShowStakeDropdown] = useState(false);
-  const [validators, setValidators] = useState([]); // Danh sách validator lấy từ P-Chain RPC
+  const [validators, setValidators] = useState([]);
   const [loadingValidators, setLoadingValidators] = useState(false);
-  const [claimableStakingReward, setClaimableStakingReward] = useState("0"); // Reward staking đang chờ claim (cộng về Main Wallet)
-  const stakeDropdownRef = useRef(null);
+  const [claimableStakingReward, setClaimableStakingReward] = useState("0");
+  // Reward FTSO sinh ra từ việc stake, cộng thẳng vào Main Wallet (cAddress) — khác với claimableStakingReward
+  // (pool riêng của SDK) và balances.reward (FTSO reward tích lũy qua PDA).
+  const [mainWalletFtsoReward, setMainWalletFtsoReward] = useState("0");
+  // Chi tiết từng khoản đang stake của mình trên P-Chain: nodeId, amount, startTime, endTime
+  const [myStakes, setMyStakes] = useState([]);
+  const [stakesLoading, setStakesLoading] = useState(false);
+  const [stakesError, setStakesError] = useState(false);
 
+  // --- UI state ---
   const [showQR, setShowQR] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showNetworkModal, setShowNetworkModal] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [walletType, setWalletType] = useState("");
-  const [customEthersProvider, setCustomEthersProvider] = useState(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(0);
   const [isSwapOpen, setIsSwapOpen] = useState(false);
   const [quoteIndex, setQuoteIndex] = useState(0);
-
-  // --- Trạng thái kiểm tra MetaMask đã có mạng Flare Mainnet hay chưa (dùng khi CHƯA connect) ---
-  const [isFlrNetworkAdded, setIsFlrNetworkAdded] = useState(true); // mặc định true để tránh hiện nhầm nút trước khi kiểm tra xong
-
+  const [status, setStatus] = useState("");
   const [currentTime, setCurrentTime] = useState(new Date());
 
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setCurrentTime(new Date());
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const formatCurrentTime = useCallback((date) => {
-    const pad = (n) => n.toString().padStart(2, '0');
-    return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
-  }, []);
-
   const dropdownRef = useRef(null);
-  const prices = useCryptoPrices();
+  const stakeDropdownRef = useRef(null);
+  const rewardRef = useRef(balances.reward);
 
-  const toUSD = useCallback((amt) => `$${(Number(amt) * prices.flr).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, [prices.flr]);
-  const formatBalance = useCallback((amt) => {
-    return Number(amt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }, []);
+  const { prices, flrFlash, fcat } = useCryptoPrices();
+  const liveNews = useLiveNews(2);
+  const loadingQuotes = tList("quotes");
 
-  const getProvider = useCallback(() => {
+  const toUSD = useCallback(
+    (amt) => `$${(Number(amt) * prices.flr).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    [prices.flr]
+  );
+  const formatBalance = useCallback(
+    (amt) => Number(amt).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+    []
+  );
+
+  // Provider được memo hóa: chỉ tạo mới khi walletType/customEthersProvider thực sự đổi. Nếu tạo
+  // BrowserProvider mới mỗi lần render (đồng hồ re-render mỗi giây), mỗi cái sẽ gắn thêm listener vào
+  // window.ethereum mà không bao giờ được gỡ -> MaxListenersExceededWarning.
+  const provider = useMemo(() => {
     if (walletType === "metamask" && window.ethereum) return new ethers.BrowserProvider(window.ethereum);
     if (walletType === "walletconnect" && customEthersProvider) return customEthersProvider;
     return null;
   }, [walletType, customEthersProvider]);
 
-  // --- LẤY PROVIDER EIP-1193 THÔ (KHÔNG QUA ETHERS) ĐỂ DÙNG CHO FLARE-TX-SDK ---
-  // SDK @flarenetwork/flare-tx-sdk cần provider dạng EIP-1193 gốc (window.ethereum hoặc provider của WalletConnect),
-  // không phải ethers.BrowserProvider đã bọc lại.
+  const getProvider = useCallback(() => provider, [provider]);
+
+  // flare-tx-sdk cần provider EIP-1193 thô, không phải ethers.BrowserProvider đã bọc lại
   const getEip1193Provider = useCallback(() => {
     if (walletType === "metamask" && window.ethereum) return window.ethereum;
     if (walletType === "walletconnect") {
-      try { return modal.getWalletProvider(); } catch (e) { return null; }
+      try { return modal.getWalletProvider(); } catch { return null; }
     }
     return null;
   }, [walletType]);
 
-  // --- KHỞI TẠO WALLET CỦA FLARE-TX-SDK (DÙNG CHUNG CHO MỌI THAO TÁC P-CHAIN) ---
   const getPChainWallet = useCallback(async () => {
     const rawProvider = getEip1193Provider();
-    if (!rawProvider) throw new Error("Chưa kết nối ví hoặc ví không hỗ trợ P-Chain");
+    if (!rawProvider) throw new Error("Wallet not connected or does not support P-Chain");
     const controller = new EIP1193WalletController(rawProvider);
-    const wallet = await controller.getActiveWallet();
-    return wallet;
+    return controller.getActiveWallet();
   }, [getEip1193Provider]);
 
-  // --- LẤY ĐỊA CHỈ P-CHAIN THẬT (SUY RA TỪ CÙNG PUBLIC KEY VỚI VÍ ĐANG DÙNG) + SỐ DƯ P-CHAIN ---
+  // --- Reward staking đang chờ claim + FTSO reward sinh ra từ stake (2 pool khác nhau, xem ghi chú ở state) ---
+  const refreshClaimableStakingReward = useCallback(async (publicKeyOverride) => {
+    // Lưu ý: khi dùng làm callback của setInterval, tham số đầu có thể là undefined -> dùng state
+    const publicKey = typeof publicKeyOverride === "string" ? publicKeyOverride : pChainPublicKey;
+    if (!publicKey) return;
+    try {
+      const cAddress = FLR_NETWORK.getCAddress(publicKey);
+      const claimable = await FLR_NETWORK.getClaimableStakingReward(cAddress);
+      setClaimableStakingReward(ethers.formatEther(claimable.toString()));
+
+      try {
+        const p = getProvider();
+        if (p) {
+          const rewardManager = new ethers.Contract(REWARD_MANAGER, ABI.rewardManager, p);
+          const states = await rewardManager.getStateOfRewards(cAddress);
+          let mainWalletRewardWei = 0n;
+          if (Array.isArray(states)) {
+            states.forEach((epochArray) => {
+              if (Array.isArray(epochArray)) epochArray.forEach((state) => { mainWalletRewardWei += BigInt(state[2]); });
+            });
+          }
+          setMainWalletFtsoReward(ethers.formatEther(mainWalletRewardWei));
+        }
+      } catch {
+        setMainWalletFtsoReward("0");
+      }
+    } catch (e) {
+      console.error("Lỗi làm mới reward staking:", e);
+    }
+  }, [pChainPublicKey, getProvider]);
+
+  // Cache danh sách nodeID mà ví này từng stake, để lần sau chỉ cần tra đúng các validator đó.
+  const stakeNodeCacheKey = useCallback((pAddr) => `flareportal_stake_nodes_${pAddr}`, []);
+
+  // RPC công khai của Flare hay trả 429/503 khi bị gọi dồn dập; trình duyệt thường hiển thị nhầm thành
+  // "CORS blocked" vì response lỗi không kèm header CORS. Hàm này thử lại vài lần, mỗi lần chờ lâu hơn.
+  const withRetry429 = useCallback(async (fn, retries = 3, delayMs = 1500) => {
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (attempt === retries) throw e;
+        await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
+      }
+    }
+  }, []);
+
+  // Hàm gọi RPC P-Chain DÙNG CHUNG cho mọi nơi: thử lần lượt từng URL trong P_CHAIN_RPC_URLS, mỗi URL
+  // retry vài lần cho mọi lỗi mạng. Nếu response có field "error" (lỗi tầng logic) thì ném lỗi luôn.
+  const fetchPChainRPC = useCallback(async (method, params, retryOpts = {}) => {
+    const { retries = 2, delayMs = 1500 } = retryOpts;
+    let lastErr = null;
+    for (const url of P_CHAIN_RPC_URLS) {
+      try {
+        return await withRetry429(async () => {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 })
+          });
+          if (!res.ok) throw new Error(`P-Chain RPC (${url}) trả về HTTP ${res.status}`);
+          const data = await res.json();
+          if (data?.error) throw new Error(data.error?.message || "P-Chain RPC trả về lỗi");
+          return data;
+        }, retries, delayMs);
+      } catch (e) {
+        lastErr = e;
+        console.warn(`P-Chain RPC lỗi ở endpoint ${url}${P_CHAIN_RPC_URLS.length > 1 ? ", thử endpoint kế tiếp" : ""}:`, e);
+      }
+    }
+    throw lastErr || new Error("Tất cả P-Chain RPC endpoint đều lỗi");
+  }, [withRetry429]);
+
+  // Bước gác cổng: platform.getStake trả gần như ngay tổng FLR đang stake của địa chỉ này. Nếu = 0 thì
+  // chắc chắn chưa từng stake -> khỏi dò cache, khỏi quét mạng. Không cho biết nodeID/endTime từng khoản.
+  const checkTotalStaked = useCallback(async (pAddress) => {
+    const data = await fetchPChainRPC("platform.getStake", { addresses: [`P-${pAddress}`], validatorsOnly: false });
+    return BigInt(data?.result?.staked || "0");
+  }, [fetchPChainRPC]);
+
+  const refreshMyStakes = useCallback(async (publicKeyOverride) => {
+    // Khi dùng làm onClick, tham số đầu là event -> chỉ nhận chuỗi
+    const publicKey = typeof publicKeyOverride === "string" ? publicKeyOverride : pChainPublicKey;
+    if (!publicKey) return;
+    setStakesLoading(true);
+    setStakesError(false);
+    try {
+      const pAddress = FLR_NETWORK.getPAddress(publicKey);
+
+      let totalStakedWei = null;
+      try {
+        totalStakedWei = await checkTotalStaked(pAddress);
+      } catch {
+        totalStakedWei = null; // getStake cũng lỗi -> vẫn thử đường cũ bên dưới, không chặn luồng
+      }
+      if (totalStakedWei === 0n) {
+        setMyStakes([]);
+        setStakesLoading(false);
+        return;
+      }
+
+      // platform.getCurrentValidators chỉ trả danh sách "delegators" chi tiết khi chỉ định ĐÚNG MỘT nodeID
+      // ("If a single nodeID is provided, full delegators information is also returned"). Vì vậy phải gọi
+      // riêng từng nodeID để so khớp — chạy song song theo lô nhỏ và dừng ngay khi đã khớp đủ tổng FLR.
+      // Có cache nodeID để lần sau chỉ tra đúng các validator đó (1-2 request).
+      const matchValidatorEntry = (validator, out) => {
+        // Trường hợp hiếm: chính bạn là validator (không phải delegator)
+        const vAddrs = (validator.validationRewardOwner && validator.validationRewardOwner.addresses) || [];
+        if (vAddrs.some((a) => a.replace(/^P-/, "") === pAddress)) {
+          out.push({
+            nodeId: validator.nodeID,
+            amount: (BigInt(validator.stakeAmount || 0) * 1000000000n).toString(),
+            startTime: validator.startTime,
+            endTime: validator.endTime
+          });
+        }
+        for (const d of validator.delegators || []) {
+          const dAddrs = (d.delegationRewardOwner && d.delegationRewardOwner.addresses) || [];
+          if (dAddrs.some((a) => a.replace(/^P-/, "") === pAddress)) {
+            out.push({
+              nodeId: d.nodeID || validator.nodeID,
+              amount: (BigInt(d.stakeAmount || 0) * 1000000000n).toString(),
+              startTime: d.startTime,
+              endTime: d.endTime
+            });
+          }
+        }
+      };
+      const sumWei = (list) => list.reduce((sum, s) => sum + BigInt(s.amount), 0n);
+
+      let cachedNodeIds = [];
+      try {
+        cachedNodeIds = JSON.parse(localStorage.getItem(stakeNodeCacheKey(pAddress)) || "[]");
+        if (!Array.isArray(cachedNodeIds)) cachedNodeIds = [];
+      } catch {
+        cachedNodeIds = [];
+      }
+
+      const found = [];
+
+      // ĐƯỜNG NHANH: đã có cache -> tra thẳng đúng các validator đó (song song).
+      if (cachedNodeIds.length > 0) {
+        const results = await Promise.all(
+          cachedNodeIds.map((nodeId) =>
+            fetchPChainRPC("platform.getCurrentValidators", { nodeIDs: [nodeId] }, { retries: 1, delayMs: 800 }).catch(() => null)
+          )
+        );
+        for (const data of results) {
+          for (const validator of data?.result?.validators || []) matchValidatorEntry(validator, found);
+        }
+      }
+
+      // ĐƯỜNG ĐẦY ĐỦ: cache trống hoặc chưa khớp đủ số FLR -> quét các validator còn lại theo lô song song,
+      // dừng ngay khi đã khớp đủ tổng FLR hoặc hết thời gian cho phép.
+      if (totalStakedWei != null ? sumWei(found) < totalStakedWei : found.length === 0) {
+        const SCAN_TIMEOUT_MS = 20000;
+        const CONCURRENCY = 6;
+        let scanTimer;
+        try {
+          await Promise.race([
+            (async () => {
+              const listData = await fetchPChainRPC("platform.getCurrentValidators", { subnetID: PRIMARY_SUBNET_ID });
+              const remainingIds = (listData?.result?.validators || [])
+                .map((v) => v.nodeID)
+                .filter((id) => !cachedNodeIds.includes(id));
+              for (let i = 0; i < remainingIds.length; i += CONCURRENCY) {
+                if (totalStakedWei != null && sumWei(found) >= totalStakedWei) break;
+                const batch = remainingIds.slice(i, i + CONCURRENCY);
+                const results = await Promise.all(
+                  batch.map((nodeId) =>
+                    fetchPChainRPC("platform.getCurrentValidators", { nodeIDs: [nodeId] }, { retries: 1, delayMs: 800 }).catch(() => null)
+                  )
+                );
+                for (const data of results) {
+                  for (const validator of data?.result?.validators || []) matchValidatorEntry(validator, found);
+                }
+              }
+            })(),
+            new Promise((_, reject) => {
+              scanTimer = setTimeout(() => reject(new Error(`quét toàn bộ validator chưa xong sau ${SCAN_TIMEOUT_MS / 1000}s`)), SCAN_TIMEOUT_MS);
+            })
+          ]);
+        } catch (raceErr) {
+          // Hết giờ quét: vẫn dùng những gì đã tìm được tới lúc đó
+          console.warn("Quét validator chưa xong trong thời gian cho phép, dùng kết quả tìm được đến hiện tại:", raceErr);
+        } finally {
+          clearTimeout(scanTimer);
+        }
+      }
+
+      const parsed = found.map((s) => ({
+        nodeId: s.nodeId,
+        amount: ethers.formatEther(s.amount.toString()),
+        startTime: Number(s.startTime),
+        endTime: Number(s.endTime)
+      }));
+      setMyStakes(parsed);
+
+      try {
+        const nodeIds = [...new Set(parsed.map((s) => s.nodeId))];
+        localStorage.setItem(stakeNodeCacheKey(pAddress), JSON.stringify(nodeIds));
+      } catch {
+        /* localStorage không khả dụng — bỏ qua cache */
+      }
+
+      // Ví CÓ stake nhưng chưa khớp đủ -> hiện ô chọn thủ công để không "mất dấu" khoản stake.
+      if (totalStakedWei != null && sumWei(found) < totalStakedWei) {
+        console.warn("Chưa khớp đủ tổng số FLR đang stake với các validator hiện có (có thể quét chưa xong hoặc validator đã rớt khỏi active set).");
+        setStakesError(true);
+      }
+    } catch (e) {
+      // Trạng thái đã được UI xử lý (ô chọn thủ công validator sẽ hiện ra) -> chỉ cần cảnh báo
+      console.warn("Không tự động dò được stake (sẽ chuyển sang chọn thủ công):", e);
+      setStakesError(true);
+    } finally {
+      setStakesLoading(false);
+    }
+  }, [pChainPublicKey, stakeNodeCacheKey, checkTotalStaked, fetchPChainRPC]);
+
+  // Cho phép người dùng tự xác định validator đã stake khi không thể tự động dò ra — ghi thẳng vào cache
+  // rồi tải lại theo đường nhanh.
+  const handleIdentifyKnownValidator = useCallback((nodeId) => {
+    if (!pChainAddress) return;
+    try {
+      const key = stakeNodeCacheKey(pChainAddress);
+      const existing = JSON.parse(localStorage.getItem(key) || "[]");
+      const merged = [...new Set([...(Array.isArray(existing) ? existing : []), nodeId])];
+      localStorage.setItem(key, JSON.stringify(merged));
+    } catch {
+      /* localStorage không khả dụng */
+    }
+    setManualNodeSearch("");
+    refreshMyStakes();
+  }, [pChainAddress, stakeNodeCacheKey, refreshMyStakes]);
+
   const initPChain = useCallback(async () => {
     try {
-      setStatus("⏳ Đang lấy địa chỉ P-Chain (cần ký xác nhận trên ví)...");
+      setStatus(t("statusFetchingPchain"));
       const wallet = await getPChainWallet();
       const publicKey = await wallet.getPublicKey();
-      const cAddress = await wallet.getCAddress();
       setPChainPublicKey(publicKey);
-      setPChainAddress(flrNetwork.getPAddress(publicKey));
-      const balance = await flrNetwork.getBalance(publicKey);
+      setPChainAddress(FLR_NETWORK.getPAddress(publicKey));
+      const balance = await FLR_NETWORK.getBalance(publicKey);
       setPChainBalance(ethers.formatEther(balance.availableOnP.toString()));
       setStakedAmount(ethers.formatEther(balance.stakedOnP.toString()));
-      // Reward staking được tính theo địa chỉ C-Chain (Main Wallet), không phải P-Chain
-      const claimable = await flrNetwork.getClaimableStakingReward(cAddress).catch(() => 0n);
-      setClaimableStakingReward(ethers.formatEther(claimable.toString()));
-      setStatus("✅ Đã lấy địa chỉ P-Chain thành công!");
+      await refreshClaimableStakingReward(publicKey);
+      await refreshMyStakes(publicKey);
+      setStatus(t("statusPchainSuccess"));
     } catch (e) {
-      setStatus(`❌ Lỗi lấy địa chỉ P-Chain: ${getErrMsg(e)}`);
+      setStatus(t("statusPchainError", { msg: getErrMsg(e) }));
     }
-  }, [getPChainWallet]);
+  }, [getPChainWallet, t, refreshClaimableStakingReward, refreshMyStakes]);
 
-  // --- LÀM MỚI SỐ DƯ P-CHAIN (GỌI LẠI SAU MỖI GIAO DỊCH NẠP/STAKE) ---
   const refreshPChainBalance = useCallback(async () => {
     if (!pChainPublicKey) return;
     try {
-      const balance = await flrNetwork.getBalance(pChainPublicKey);
+      const balance = await FLR_NETWORK.getBalance(pChainPublicKey);
       setPChainBalance(ethers.formatEther(balance.availableOnP.toString()));
       setStakedAmount(ethers.formatEther(balance.stakedOnP.toString()));
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      console.error("Lỗi làm mới số dư P-Chain:", e);
+    }
   }, [pChainPublicKey]);
 
-  // --- LẤY DANH SÁCH VALIDATOR THẬT TỪ P-CHAIN RPC (platform.getCurrentValidators) ---
-  // + GHÉP TÊN PROVIDER TỪ FILE CHÍNH THỨC CỦA FLARE FOUNDATION (nodeID -> tên) ĐỂ NGƯỜI DÙNG BIẾT ĐÓ LÀ AI
+  // Lấy danh sách validator thật từ P-Chain RPC + ghép tên provider từ file chính thức của Flare Foundation
   const fetchValidators = useCallback(async () => {
     setLoadingValidators(true);
     try {
-      const [rpcRes, csvRes] = await Promise.all([
-        fetch(P_CHAIN_RPC, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            method: "platform.getCurrentValidators",
-            params: { subnetID: PRIMARY_SUBNET_ID },
-            id: 1
-          })
-        }),
-        // File chính thức của Flare Foundation, host trên raw.githubusercontent.com (cho phép gọi từ trình duyệt)
-        fetch("https://raw.githubusercontent.com/flare-foundation/reward-scripts/main/ftso-address.csv").catch(() => null)
+      const [data, csvRes] = await Promise.all([
+        fetchPChainRPC("platform.getCurrentValidators", { subnetID: PRIMARY_SUBNET_ID }),
+        fetch(VALIDATOR_NAMES_URL).catch(() => null)
       ]);
 
-      // --- Parse CSV: "TênProvider,0xĐịaChỉ,NodeID-xxxxx,..." -> map nodeID -> tên ---
       const nodeNameMap = {};
-      if (csvRes && csvRes.ok) {
+      if (csvRes?.ok) {
         const csvText = await csvRes.text();
-        csvText.split("\n").forEach(line => {
+        csvText.split("\n").forEach((line) => {
           const cols = line.split(",");
           if (cols.length >= 3 && cols[2]?.trim().startsWith("NodeID-")) {
             nodeNameMap[cols[2].trim()] = cols[0].trim();
@@ -316,45 +746,137 @@ export default function FlarePortal() {
         });
       }
 
-      const data = await rpcRes.json();
       const list = (data?.result?.validators || [])
-        .filter(v => v.connected)
-        .map(v => {
-          // LƯU Ý: response RPC của Flare KHÔNG có field "stakeAmount" — self-bond nằm ở field "weight".
-          // Đơn vị trả về là nFLR (9 số thập phân), khác với C-Chain (wei, 18 số thập phân).
-          const selfBondFLR = Number(v.weight || 0) / 1e9;
+        .filter((v) => v.connected)
+        .map((v) => {
+          // "weight" từ platform.getCurrentValidators là TỔNG trọng số (self-bond + toàn bộ FLR đã delegate),
+          // không phải riêng self-bond. Phải trừ delegatedFLR ra mới ra self-bond thật, rồi mới tính cap;
+          // nếu không freeSpace bị tính "ảo" cao và tx thật sẽ bị từ chối "validator would be over delegated".
+          const totalWeightFLR = Number(v.weight || 0) / 1e9;
           const delegatedFLR = Number(v.delegatorWeight || 0) / 1e9;
-          // Quy định thực tế của Flare: hạn mức nhận delegate = tối đa 15 lần self-bond, và không vượt quá 200 triệu FLR/validator
+          const selfBondFLR = Math.max(totalWeightFLR - delegatedFLR, 0);
+          // Hạn mức nhận delegate = tối đa 15 lần self-bond, không vượt quá 200 triệu FLR/validator
           const cap = Math.min(selfBondFLR * 15, 200_000_000);
           const freeSpace = Math.max(cap - delegatedFLR, 0);
-          // Thời điểm validator hết hạn tự stake (self-bond) — mọi delegation PHẢI kết thúc TRƯỚC mốc này
           const endTimeUnix = Number(v.endTime || 0);
           const daysUntilEnd = endTimeUnix > 0 ? Math.floor((endTimeUnix - Date.now() / 1000) / 86400) : null;
           return {
             nodeID: v.nodeID,
-            name: nodeNameMap[v.nodeID] || null, // null nếu validator không đăng ký tên (chỉ chạy node, không phải FTSO provider)
+            name: nodeNameMap[v.nodeID] || null,
             uptime: Number(v.uptime),
             delegationFee: Number(v.delegationFee),
             selfBondFLR,
             delegatedFLR,
-            freeSpace, // Số FLR validator còn có thể nhận thêm trước khi bị "over delegated"
-            endTimeUnix, // Unix timestamp (giây) lúc validator hết hạn self-bond
-            daysUntilEnd, // Số ngày còn lại trước khi validator hết hạn (làm tròn xuống)
+            freeSpace,
+            endTimeUnix,
+            daysUntilEnd
           };
         })
-        .sort((a, b) => (b.name ? 1 : 0) - (a.name ? 1 : 0) || b.freeSpace - a.freeSpace); // Ưu tiên có tên + còn nhiều hạn mức
+        .sort((a, b) => (b.name ? 1 : 0) - (a.name ? 1 : 0) || b.freeSpace - a.freeSpace);
       setValidators(list);
-      return list; // Trả về luôn để chỗ gọi (vd: handleStakeFLR) dùng ngay số liệu mới nhất, không phải chờ React state cập nhật
+      return list;
     } catch (e) {
-      console.error(e);
-      setStatus("❌ Không lấy được danh sách validator, vui lòng thử lại");
+      console.error("Lỗi lấy danh sách validator:", e);
+      setStatus(t("statusValidatorFetchError"));
       return null;
     } finally {
       setLoadingValidators(false);
     }
+  }, [t, fetchPChainRPC]);
+
+  const refreshData = useCallback(async (addr, pda, explicitProvider = null) => {
+    if (!addr || !pda) return;
+    const p = explicitProvider || getProvider();
+    if (!p) return;
+    try {
+      let activated = false;
+      try {
+        const pdaContract = new ethers.Contract(pda, ABI.pdaOwner, p);
+        const pdaOwner = await pdaContract.owner();
+        activated = pdaOwner.toLowerCase() === addr.toLowerCase();
+      } catch {
+        activated = false;
+      }
+
+      const wnat = new ethers.Contract(WNAT, ABI.wnat, p);
+      const rewardManager = new ethers.Contract(REWARD_MANAGER, ABI.rewardManager, p);
+      const usdt0Contract = new ethers.Contract(USDT0_ADDRESS, ABI.erc20Balance, p);
+      const usdtContract = new ethers.Contract(USDT_ADDRESS, ABI.erc20Balance, p);
+
+      const [f, w, pw, rewardStates, usdt0Raw, usdtRaw] = await Promise.all([
+        p.getBalance(addr),
+        wnat.balanceOf(addr),
+        wnat.balanceOf(pda),
+        rewardManager.getStateOfRewards(pda).catch(() => []),
+        usdt0Contract.balanceOf(addr).catch(() => 0n),
+        usdtContract.balanceOf(addr).catch(() => 0n)
+      ]);
+      const [addresses, bips] = await wnat.delegatesOf(pda).catch(() => [[], []]);
+
+      let totalRewardWei = 0n;
+      if (Array.isArray(rewardStates)) {
+        rewardStates.forEach((epochArray) => {
+          if (Array.isArray(epochArray)) epochArray.forEach((state) => { totalRewardWei += BigInt(state[2]); });
+        });
+      }
+
+      setIsActivated(activated);
+      setBalances({ flr: ethers.formatEther(f), wflr: ethers.formatEther(w), pdaWflr: ethers.formatEther(pw), reward: ethers.formatEther(totalRewardWei) });
+      setUsdt0Balance(ethers.formatUnits(usdt0Raw, 6));
+      setUsdtBalance(ethers.formatUnits(usdtRaw, 6));
+
+      const currentDels = [];
+      if (addresses?.length) {
+        addresses.forEach((delegateAddr, i) => {
+          if (delegateAddr !== ethers.ZeroAddress && bips[i] > 0n) {
+            const pInfo = PROVIDERS.find((prov) => prov.address.toLowerCase() === delegateAddr.toLowerCase());
+            currentDels.push({ name: pInfo ? pInfo.name : `${delegateAddr.slice(0, 6)}...`, addr: delegateAddr, pct: Number(bips[i]) / 100 });
+          }
+        });
+      }
+      setDelegations(currentDels);
+    } catch (e) {
+      console.error("Lỗi làm mới dữ liệu ví:", e);
+    }
+  }, [getProvider]);
+
+  const disconnect = useCallback(async () => {
+    if (walletType === "walletconnect") {
+      try { await modal.disconnect(); } catch (e) { console.error("Lỗi ngắt kết nối WalletConnect:", e); }
+    }
+    setAccount("");
+    setPdaAddress("");
+    setWalletType("");
+    setCustomEthersProvider(null);
+    setIsActivated(false);
+    setBalances({ flr: "0", wflr: "0", pdaWflr: "0", reward: "0" });
+    setUsdt0Balance("0");
+    setUsdtBalance("0");
+    setDelegations([]);
+    setStatus(t("statusDisconnected"));
+    setPChainPublicKey("");
+    setPChainAddress("");
+    setPChainBalance("0");
+    setStakedAmount("0");
+    setStakeProviders([]);
+    setStakeAmount("");
+    setClaimableStakingReward("0");
+    setMainWalletFtsoReward("0");
+    setMyStakes([]);
+  }, [walletType, t]);
+
+  // ---- Effects ----
+
+  useEffect(() => {
+    setStatus(t("statusReady"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const rewardRef = useRef(balances.reward);
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     rewardRef.current = balances.reward;
   }, [balances.reward]);
@@ -367,7 +889,6 @@ export default function FlarePortal() {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setShowDropdown(false);
       if (stakeDropdownRef.current && !stakeDropdownRef.current.contains(e.target)) setShowStakeDropdown(false);
     };
-
     document.addEventListener("mousedown", handleClickOutside);
     return () => {
       document.body.style.backgroundColor = "";
@@ -375,22 +896,18 @@ export default function FlarePortal() {
     };
   }, []);
 
-  // --- Kiểm tra xem MetaMask hiện đang ở mạng Flare Mainnet hay không, kể cả khi CHƯA kết nối ví ---
-  // Lưu ý: MetaMask không có API để hỏi "chain X đã được add chưa" nếu ví chưa từng switch sang chain đó.
-  // Cách xấp xỉ tốt nhất: kiểm tra chainId hiện tại của MetaMask (không cần cấp quyền / không cần connect).
+  // Kiểm tra MetaMask đã ở mạng Flare Mainnet chưa, kể cả khi chưa kết nối ví
   useEffect(() => {
     if (!window.ethereum) return;
     let isMounted = true;
-
     const checkFlrNetwork = async () => {
       try {
         const chainId = await window.ethereum.request({ method: "eth_chainId" });
-        if (isMounted) setIsFlrNetworkAdded(chainId === "0xe");
-      } catch (e) {
+        if (isMounted) setIsFlrNetworkAdded(chainId === FLARE_CHAIN_ID_HEX);
+      } catch {
         if (isMounted) setIsFlrNetworkAdded(false);
       }
     };
-
     checkFlrNetwork();
     window.ethereum.on("chainChanged", checkFlrNetwork);
     return () => {
@@ -399,81 +916,23 @@ export default function FlarePortal() {
     };
   }, []);
 
-  const refreshData = useCallback(async (addr, pda, explicitProvider = null) => {
-    if (!addr || !pda) return;
-    const p = explicitProvider || getProvider();
-    if (!p) return;
-    try {
-      let activated = false;
-      try {
-        const pdaContract = new ethers.Contract(pda, ["function owner() view returns (address)"], p);
-        const pdaOwner = await pdaContract.owner();
-        activated = (pdaOwner.toLowerCase() === addr.toLowerCase());
-      } catch (e) { activated = false; }
-
-      const wnat = new ethers.Contract(WNAT, ["function balanceOf(address) view returns (uint256)", "function delegatesOf(address) view returns (address[], uint256[], uint256, uint256)"], p);
-      const rew = new ethers.Contract(REWARD_MANAGER, ["function getStateOfRewards(address) view returns (tuple(uint24, bytes20, uint120, uint8, bool)[][])"], p);
-      const usdt0Contract = new ethers.Contract(USDT0_ADDRESS, ["function balanceOf(address) view returns (uint256)"], p);
-      const usdtContract = new ethers.Contract(USDT_ADDRESS, ["function balanceOf(address) view returns (uint256)"], p);
-
-      const [f, w, pw, rewardStates, usdt0Raw, usdtRaw] = await Promise.all([
-        p.getBalance(addr),
-        wnat.balanceOf(addr),
-        wnat.balanceOf(pda),
-        rew.getStateOfRewards(pda).catch(() => []),
-        usdt0Contract.balanceOf(addr).catch(() => 0n),
-        usdtContract.balanceOf(addr).catch(() => 0n)
-      ]);
-      const del = await wnat.delegatesOf(pda).catch(() => [[], [], 0n, 0n]);
-
-      let totalRewardWei = 0n;
-      if (Array.isArray(rewardStates)) {
-        rewardStates.forEach(epochArray => {
-          if (Array.isArray(epochArray)) epochArray.forEach(state => { totalRewardWei += BigInt(state[2]); });
-        });
-      }
-
-      setIsActivated(activated);
-      setBalances({ flr: ethers.formatEther(f), wflr: ethers.formatEther(w), pdaWflr: ethers.formatEther(pw), reward: ethers.formatEther(totalRewardWei) });
-      setUsdt0Balance(ethers.formatUnits(usdt0Raw, 6));
-      setUsdtBalance(ethers.formatUnits(usdtRaw, 6));
-      const [addresses, bips] = del;
-      const currentDels = [];
-      if (addresses && addresses.length > 0) {
-        addresses.forEach((delegateAddr, i) => {
-          if (delegateAddr !== ethers.ZeroAddress && bips[i] > 0n) {
-            const pInfo = PROVIDERS.find(prov => prov.address.toLowerCase() === delegateAddr.toLowerCase());
-            currentDels.push({ name: pInfo ? pInfo.name : `${delegateAddr.slice(0, 6)}...`, addr: delegateAddr, pct: Number(bips[i]) / 100 });
-          }
-        });
-      }
-      setDelegations(currentDels);
-    } catch (e) { console.error(e); }
-  }, [getProvider]);
-
-  const disconnect = useCallback(async () => {
-    if (walletType === "walletconnect") { try { await modal.disconnect(); } catch (e) {} }
-    setAccount(""); setPdaAddress(""); setWalletType(""); setCustomEthersProvider(null); setIsActivated(false);
-    setBalances({ flr: "0", wflr: "0", pdaWflr: "0", reward: "0" });
-    setUsdt0Balance("0"); setUsdtBalance("0");
-    setDelegations([]); setStatus("Đã ngắt kết nối");
-    // Reset toàn bộ state P-Chain khi ngắt kết nối
-    setPChainPublicKey(""); setPChainAddress(""); setPChainBalance("0"); setStakedAmount("0");
-    setStakeProviders([]); setStakeAmount(""); setClaimableStakingReward("0");
-  }, [walletType]);
-
   useEffect(() => {
     if (walletType !== "metamask" || !window.ethereum) return;
     const handleAccountsChanged = async (newAccs) => {
-      if (newAccs.length === 0) disconnect();
-      else {
+      if (newAccs.length === 0) {
+        disconnect();
+        return;
+      }
+      try {
         const addr = newAccs[0];
         setAccount(addr);
         const p = new ethers.BrowserProvider(window.ethereum);
-        const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ["function accountToDelegationAccount(address) view returns (address)"], p);
+        const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
         const pda = await csm.accountToDelegationAccount(addr);
         setPdaAddress(pda);
         refreshData(addr, pda, p);
+      } catch (e) {
+        console.error("Lỗi khi đổi tài khoản ví:", e);
       }
     };
     const handleChainChanged = () => window.location.reload();
@@ -485,61 +944,47 @@ export default function FlarePortal() {
     };
   }, [walletType, refreshData, disconnect]);
 
+  // Đồng bộ đồng hồ đếm ngược chu kỳ reward theo block time của chain (tránh lệch giờ máy người dùng)
   useEffect(() => {
     let blockTimeOffset = 0;
     let isMounted = true;
-    let timerInterval;
-    let syncInterval;
+
+    const updateTimerUI = () => {
+      const currentNetworkSeconds = Math.floor((Date.now() + blockTimeOffset) / 1000);
+      const currentReward = Number(rewardRef.current) || 0;
+      if (currentReward > 0) {
+        setTimeLeft(0);
+        return;
+      }
+      const elapsedSinceAnchor = Math.max(currentNetworkSeconds - FLARE_EPOCH_ANCHOR, 0);
+      const elapsedInCycle = elapsedSinceAnchor % CYCLE_SECONDS;
+      setTimeLeft(CYCLE_SECONDS - elapsedInCycle);
+    };
 
     const syncBlockTime = async () => {
       try {
         const p = getProvider();
         if (!p) return;
-
         const startFetchTime = Date.now();
         const block = await p.getBlock("latest");
         const endFetchTime = Date.now();
-
         if (block && isMounted) {
           const networkLatency = Math.floor((endFetchTime - startFetchTime) / 2);
           const localTimeAtBlock = endFetchTime - networkLatency;
-          blockTimeOffset = (Number(block.timestamp) * 1000) - localTimeAtBlock;
+          blockTimeOffset = Number(block.timestamp) * 1000 - localTimeAtBlock;
           updateTimerUI();
         }
-      } catch (error) {
-        console.error("Lỗi đồng bộ thời gian blockchain:", error);
-      }
-    };
-
-    const updateTimerUI = () => {
-      const currentNetworkSeconds = Math.floor((Date.now() + blockTimeOffset) / 1000);
-      const currentReward = Number(rewardRef.current) || 0;
-
-      if (currentReward > 0) {
-        setTimeLeft(0);
-      } else {
-        const FLARE_EPOCH_ANCHOR = 1672945200;
-
-        let timeElapsedSinceAnchor = currentNetworkSeconds - FLARE_EPOCH_ANCHOR;
-        if (timeElapsedSinceAnchor < 0) {
-          timeElapsedSinceAnchor = 0;
-        }
-
-        const timeElapsedInCycle = timeElapsedSinceAnchor % CYCLE_SECONDS;
-        const timeRemaining = CYCLE_SECONDS - timeElapsedInCycle;
-
-        setTimeLeft(timeRemaining);
+      } catch (e) {
+        console.error("Lỗi đồng bộ thời gian blockchain:", e);
       }
     };
 
     syncBlockTime();
-    timerInterval = setInterval(updateTimerUI, 1000);
-    syncInterval = setInterval(syncBlockTime, 3 * 60 * 1000);
+    const timerInterval = setInterval(updateTimerUI, 1000);
+    const syncInterval = setInterval(syncBlockTime, 3 * 60 * 1000);
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        syncBlockTime();
-      }
+      if (document.visibilityState === "visible") syncBlockTime();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
@@ -553,368 +998,416 @@ export default function FlarePortal() {
 
   useEffect(() => {
     if (!status.includes("⏳")) return;
-
     setQuoteIndex(Math.floor(Math.random() * 5));
-
-    const interval = setInterval(() => {
-      setQuoteIndex((prev) => (prev + 1) % 5);
-    }, 5000);
-
+    const interval = setInterval(() => setQuoteIndex((prev) => (prev + 1) % 5), 5000);
     return () => clearInterval(interval);
   }, [status]);
+
+  useEffect(() => {
+    if (account && walletType) {
+      initPChain();
+      fetchValidators();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, walletType]);
+
+  // Reward staking phát sinh liên tục trên chain — kiểm tra lại định kỳ để nút Claim tự hiện ra.
+  // KHÔNG gộp refreshMyStakes vào đây để tránh đụng rate-limit của RPC công khai; người dùng bấm nút
+  // làm mới thủ công nếu cần.
+  useEffect(() => {
+    if (!account || !walletType) return;
+    refreshClaimableStakingReward();
+    const interval = setInterval(() => refreshClaimableStakingReward(), 60_000);
+    return () => clearInterval(interval);
+  }, [account, walletType, refreshClaimableStakingReward]);
+
+  // ---- Network / connection actions ----
 
   const ensureFlareNetwork = async () => {
     if (walletType === "walletconnect") return true;
     if (!window.ethereum) return false;
     try {
       const chainId = await window.ethereum.request({ method: "eth_chainId" });
-      if (chainId !== "0xe") {
+      if (chainId !== FLARE_CHAIN_ID_HEX) {
         setShowNetworkModal(true);
         return false;
       }
       return true;
-    } catch (err) { return false; }
+    } catch {
+      return false;
+    }
   };
 
   const handleSwitchNetwork = async () => {
     if (!window.ethereum) return;
     try {
-      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0xe" }] });
+      await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: FLARE_CHAIN_ID_HEX }] });
       setShowNetworkModal(false);
     } catch (err) {
       if (err.code === 4902) {
         try {
           await window.ethereum.request({
             method: "wallet_addEthereumChain",
-            params: [{ chainId: "0xe", chainName: FLARE_PARAMS.chainName, nativeCurrency: FLARE_PARAMS.nativeCurrency, rpcUrls: FLARE_PARAMS.rpcUrls, blockExplorerUrls: FLARE_PARAMS.blockExplorerUrls }],
+            params: [{ chainId: FLARE_CHAIN_ID_HEX, chainName: FLARE_PARAMS.chainName, nativeCurrency: FLARE_PARAMS.nativeCurrency, rpcUrls: FLARE_PARAMS.rpcUrls, blockExplorerUrls: FLARE_PARAMS.blockExplorerUrls }]
           });
           setShowNetworkModal(false);
-        } catch (e) { console.error(e); }
+        } catch (e) {
+          console.error("Lỗi thêm mạng Flare:", e);
+        }
       }
     }
   };
 
-  // --- Thêm mạng Flare Mainnet vào MetaMask, dùng cho nút hiện ở màn hình CHƯA kết nối ví ---
   const handleAddFlareNetwork = async () => {
-    if (!window.ethereum) return alert("Cài MetaMask trước!");
+    if (!window.ethereum) return alert("Please install MetaMask first!");
     try {
       await window.ethereum.request({
         method: "wallet_addEthereumChain",
-        params: [{
-          chainId: "0xe",
-          chainName: FLARE_PARAMS.chainName,
-          nativeCurrency: FLARE_PARAMS.nativeCurrency,
-          rpcUrls: FLARE_PARAMS.rpcUrls,
-          blockExplorerUrls: FLARE_PARAMS.blockExplorerUrls
-        }],
+        params: [{ chainId: FLARE_CHAIN_ID_HEX, chainName: FLARE_PARAMS.chainName, nativeCurrency: FLARE_PARAMS.nativeCurrency, rpcUrls: FLARE_PARAMS.rpcUrls, blockExplorerUrls: FLARE_PARAMS.blockExplorerUrls }]
       });
       setIsFlrNetworkAdded(true);
-      setStatus("✅ Đã thêm mạng Flare vào MetaMask");
+      setStatus(t("statusNetworkAdded"));
     } catch (e) {
-      if (e?.code === 4001) setStatus("❌ Người dùng từ chối thêm mạng");
-      else setStatus("❌ Thêm mạng thất bại");
+      setStatus(e?.code === 4001 ? t("statusUserRejectedNetwork") : t("statusAddNetworkFailed"));
     }
   };
 
-  const execute = async (label, action) => {
+  const execute = async (labelKey, action) => {
     const isOk = await ensureFlareNetwork();
     if (!isOk) return;
+    const label = t(labelKey);
     try {
-      setStatus(`⏳ ${label}...`);
+      setStatus(t("statusActionProgress", { label }));
       const tx = await action();
       if (tx) {
         await tx.wait();
-        setStatus(`✅ ${label} thành công!`);
-        setWalletAmount(""); setPdaAmount(""); setPendingProvider(null); setProviderSearch("");
+        setStatus(t("statusActionSuccess", { label }));
+        setWalletAmount("");
+        setPdaAmount("");
+        setPendingProvider(null);
+        setProviderSearch("");
         setTimeout(() => refreshData(account, pdaAddress), 1500);
       }
     } catch (e) {
-      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus("❌ Người dùng từ chối");
-      else setStatus(`❌ Lỗi: ${getErrMsg(e)}`);
+      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus(t("statusUserRejected"));
+      else setStatus(t("statusGenericError", { msg: getErrMsg(e) }));
     }
   };
 
   const connectMetaMask = async () => {
-    if (!window.ethereum) return alert("Cài MetaMask!");
-    setWalletType("metamask"); setShowConnectModal(false);
+    if (!window.ethereum) return alert("Please install MetaMask!");
+    setWalletType("metamask");
+    setShowConnectModal(false);
     try {
       const chainId = await window.ethereum.request({ method: "eth_chainId" });
-      if (chainId !== "0xe") return setShowNetworkModal(true);
+      if (chainId !== FLARE_CHAIN_ID_HEX) return setShowNetworkModal(true);
       const accs = await window.ethereum.request({ method: "eth_requestAccounts" });
       const addr = accs[0];
       setAccount(addr);
       const p = new ethers.BrowserProvider(window.ethereum);
-      const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ["function accountToDelegationAccount(address) view returns (address)"], p);
+      const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
       const pda = await csm.accountToDelegationAccount(addr);
       setPdaAddress(pda);
-      setStatus("✅ Đã kết nối ví MetaMask");
+      setStatus(t("statusMetamaskConnected"));
       setTimeout(() => refreshData(addr, pda, p), 200);
-    } catch (err) { setStatus("❌ Kết nối thất bại"); }
+    } catch {
+      setStatus(t("statusConnectFailed"));
+    }
   };
 
   const connectEllipal = async () => {
     try {
-      setStatus("⏳ Đang kết nối Web3Modal...");
+      setStatus(t("statusConnectingWeb3Modal"));
       setShowConnectModal(false);
-      await modal.open({ view: 'Connect' });
+      await modal.open({ view: "Connect" });
 
+      // Chờ người dùng quét QR xong; có giới hạn thời gian và bắt lỗi để không lặp vô hạn
+      const startedAt = Date.now();
+      const WAIT_LIMIT_MS = 3 * 60 * 1000;
       const checkConnection = setInterval(async () => {
-        if (modal.getIsConnected()) {
+        if (Date.now() - startedAt > WAIT_LIMIT_MS) {
           clearInterval(checkConnection);
+          setStatus(t("statusEllipalFailed"));
+          return;
+        }
+        if (!modal.getIsConnected()) return;
+        clearInterval(checkConnection);
+        try {
           const p = new ethers.BrowserProvider(modal.getWalletProvider());
           const signer = await p.getSigner();
           const addr = await signer.getAddress();
-          setWalletType("walletconnect"); setCustomEthersProvider(p); setAccount(addr);
+          setWalletType("walletconnect");
+          setCustomEthersProvider(p);
+          setAccount(addr);
 
-          const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ["function accountToDelegationAccount(address) view returns (address)"], p);
+          const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
           const pda = await csm.accountToDelegationAccount(addr);
           setPdaAddress(pda);
-          setStatus("✅ Đã kết nối Ellipal thành công!");
+          setStatus(t("statusEllipalConnected"));
           setTimeout(() => refreshData(addr, pda, p), 200);
+        } catch (err) {
+          console.error("Lỗi kết nối Ellipal:", err);
+          setStatus(t("statusEllipalFailed"));
         }
       }, 1000);
-    } catch (e) { setStatus("❌ Kết nối Ellipal thất bại"); }
+    } catch {
+      setStatus(t("statusEllipalFailed"));
+    }
   };
 
   const handleCopy = (text) => {
-    navigator.clipboard.writeText(text); setCopied(true);
+    navigator.clipboard.writeText(text);
+    setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
   const handleOpenExplorer = (addr) => addr && window.open(`${FLARE_PARAMS.blockExplorerUrls[0]}address/${addr}`, "_blank", "noopener,noreferrer");
 
-  const handleEnablePDA = () => execute("Kích hoạt PDA", async () => {
+  // ---- Main wallet / PDA actions ----
+
+  const handleEnablePDA = () => execute("actionActivatePda", async () => {
     const s = await getProvider().getSigner();
-    return new ethers.Contract(CLAIM_SETUP_MANAGER, ["function enableDelegationAccount() external returns (address)"], s).enableDelegationAccount();
+    return new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, s).enableDelegationAccount();
   });
 
-  // --- Rút thẳng từ PDA về Main Wallet dưới dạng FLR (native) ---
-  // FIX: trước đây hàm này không kiểm tra pdaAmount trước khi mở ví ký, nên bấm nút khi ô trống/0
-  // vẫn cho ký giao dịch vô nghĩa. Giờ chặn sớm + báo lỗi rõ ràng, và kiểm tra không vượt số dư PDA.
   const handleWithdrawPDA = () => {
     const amt = Number(pdaAmount || 0);
-    if (amt <= 0) { setStatus("❌ Vui lòng nhập số lượng hợp lệ trước khi rút PDA"); return; }
-    if (amt > Number(balances.pdaWflr)) { setStatus("❌ Số dư PDA không đủ"); return; }
-    return execute("Rút PDA (về FLR)", async () => {
+    if (amt <= 0) return setStatus(t("statusInvalidBeforeWithdrawPda"));
+    if (amt > Number(balances.pdaWflr)) return setStatus(t("statusInsufficientPda"));
+    return execute("actionWithdrawPda", async () => {
       const s = await getProvider().getSigner();
       const val = ethers.parseEther(pdaAmount);
-      // Bước 1: Rút WFLR từ PDA về Main Wallet
-      const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ["function withdraw(uint256) external"], s);
+      const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, s);
       const withdrawTx = await csm.withdraw(val);
       await withdrawTx.wait();
-      // Bước 2: Unwrap ngay số WFLR vừa nhận thành FLR tại Main Wallet
-      const w = new ethers.Contract(WNAT, ["function withdraw(uint256)"], s);
+      const w = new ethers.Contract(WNAT, ABI.wnat, s);
       return w.withdraw(val);
     });
   };
 
-  const handleClaim = () => execute("Nhận thưởng", async () => {
-    const p = getProvider();
-    const s = await p.getSigner();
-    const r = new ethers.Contract(REWARD_MANAGER, ["function claim(address,address,uint24,bool,tuple(bytes32[],tuple(uint24,bytes20,uint120,uint8))[])", "function getRewardEpochIdsWithClaimableRewards() view returns (uint24,uint24)"], s);
+  const handleClaim = () => execute("actionClaim", async () => {
+    const s = await getProvider().getSigner();
+    const r = new ethers.Contract(REWARD_MANAGER, ABI.rewardManager, s);
     const [, end] = await r.getRewardEpochIdsWithClaimableRewards();
-    return await r.claim(pdaAddress, pdaAddress, end, true, []);
+    return r.claim(pdaAddress, pdaAddress, end, false, []);
   });
 
-  // --- Wrap / Unwrap ---
-  // FIX: không có kiểm tra walletAmount trước đây; giờ chặn số 0/rỗng và số vượt số dư khả dụng.
+  // Reward FTSO thuộc về Main Wallet (không phải PDA) — cả rewardOwner lẫn recipient phải là "account"
+  const handleClaimMainWalletFtsoReward = () => execute("actionClaimMainReward", async () => {
+    const s = await getProvider().getSigner();
+    const r = new ethers.Contract(REWARD_MANAGER, ABI.rewardManager, s);
+    const [, end] = await r.getRewardEpochIdsWithClaimableRewards();
+    const tx = await r.claim(account, account, end, false, []);
+    setTimeout(() => refreshClaimableStakingReward(), 1500);
+    return tx;
+  });
+
   const handleWrap = (isWrap) => {
     const amt = Number(walletAmount || 0);
-    if (amt <= 0) { setStatus("❌ Vui lòng nhập số lượng hợp lệ trước khi Wrap/Unwrap"); return; }
+    if (amt <= 0) return setStatus(t("statusInvalidBeforeWrap"));
     const maxAvail = isWrap ? Number(balances.flr) : Number(balances.wflr);
-    if (amt > maxAvail) { setStatus(`❌ Số dư ${isWrap ? "FLR" : "WFLR"} không đủ`); return; }
-    return execute(isWrap ? "Wrap" : "Unwrap", async () => {
+    if (amt > maxAvail) return setStatus(t("statusInsufficientBalance", { token: isWrap ? "FLR" : "WFLR" }));
+    return execute(isWrap ? "actionWrap" : "actionUnwrap", async () => {
       const s = await getProvider().getSigner();
-      const w = new ethers.Contract(WNAT, ["function deposit() payable", "function withdraw(uint256)"], s);
+      const w = new ethers.Contract(WNAT, ABI.wnat, s);
       const val = ethers.parseEther(walletAmount);
       return isWrap ? w.deposit({ value: val }) : w.withdraw(val);
     });
   };
 
-  // --- Nạp thẳng từ Main Wallet (FLR) vào PDA ---
-  // FIX: không có kiểm tra walletAmount trước đây; giờ chặn số 0/rỗng và số vượt số dư Main Wallet.
   const handleToPDA = () => {
     const amt = Number(walletAmount || 0);
-    if (amt <= 0) { setStatus("❌ Vui lòng nhập số lượng FLR hợp lệ trước khi nạp vào PDA"); return; }
-    if (amt > Number(balances.flr)) { setStatus("❌ Số dư Main Wallet không đủ"); return; }
-    return execute("Nạp PDA (Wrap + Chuyển)", async () => {
+    if (amt <= 0) return setStatus(t("statusInvalidBeforeToPda"));
+    if (amt > Number(balances.flr)) return setStatus(t("statusInsufficientMain"));
+    return execute("actionToPda", async () => {
       const s = await getProvider().getSigner();
       const val = ethers.parseEther(walletAmount);
-      const w = new ethers.Contract(WNAT, ["function deposit() payable", "function transfer(address,uint256)"], s);
-      // Bước 1: Wrap FLR -> WFLR ngay từ Main Wallet
+      const w = new ethers.Contract(WNAT, ABI.wnat, s);
       const wrapTx = await w.deposit({ value: val });
       await wrapTx.wait();
-      // Bước 2: Chuyển thẳng số WFLR vừa wrap sang PDA
       return w.transfer(pdaAddress, val);
     });
   };
 
-  const handleDelegate = (target, pct = 50) => execute(pct === 0 ? "Hủy" : "Ủy quyền", async () => {
+  const handleDelegate = (target, pct = 50) => execute(pct === 0 ? "actionUndelegate" : "actionDelegate", async () => {
     const s = await getProvider().getSigner();
-    return new ethers.Contract(CLAIM_SETUP_MANAGER, ["function delegate(address,uint256) external"], s).delegate(target, pct * 100);
+    return new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, s).delegate(target, pct * 100);
   });
 
-  const handleUndelegateAll = () => execute("Hủy toàn bộ", async () => {
+  const handleUndelegateAll = () => execute("actionUndelegateAll", async () => {
     const s = await getProvider().getSigner();
-    return new ethers.Contract(CLAIM_SETUP_MANAGER, ["function undelegateAll() external"], s).undelegateAll();
+    return new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, s).undelegateAll();
   });
 
-  const filteredProviders = useMemo(() => PROVIDERS.filter(p => p.name.toLowerCase().includes(providerSearch.toLowerCase())), [providerSearch]);
+  // ---- P-Chain actions ----
 
-  // --- LỌC DANH SÁCH VALIDATOR THẬT (nodeID) THEO Ô TÌM KIẾM ---
-  const filteredStakeProviders = useMemo(
-    () => validators.filter(v =>
-      v.nodeID.toLowerCase().includes(stakeProviderSearch.toLowerCase()) ||
-      (v.name && v.name.toLowerCase().includes(stakeProviderSearch.toLowerCase()))
-    ),
-    [validators, stakeProviderSearch]
-  );
-
-  // --- Khi ví đã kết nối, tự động lấy địa chỉ P-Chain thật + danh sách validator ---
-  useEffect(() => {
-    if (account && walletType) {
-      initPChain();
-      fetchValidators();
-    }
-  }, [account, walletType]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // --- NẠP FLR TỪ MAIN WALLET VÀO PCHAIN (GIAO DỊCH THẬT: export C-Chain -> import P-Chain) ---
   const handleDepositToPChain = async () => {
-    // Dùng chung ô nhập số lượng của Main Wallet (walletAmount) — cùng 1 ô cho cả nút NẠP VÀO PDA và NẠP VÀO PCHAIN
     const val = Math.floor(Number(walletAmount || 0));
-    if (val <= 0) { setStatus("❌ Vui lòng nhập số lượng FLR hợp lệ"); return; }
-    if (val > Number(balances.flr)) { setStatus("❌ Số dư Main Wallet không đủ"); return; }
+    if (val <= 0) return setStatus(t("statusInvalidFlrAmount"));
+    if (val > Number(balances.flr)) return setStatus(t("statusInsufficientMain"));
     try {
-      setStatus("⏳ Đang nạp vào Pchain (2 bước: export C-Chain, import P-Chain)...");
+      setStatus(t("statusDepositingPchain"));
       const wallet = await getPChainWallet();
-      await flrNetwork.transferToP(wallet, Amount.nats(val));
+      await FLR_NETWORK.transferToP(wallet, Amount.nats(val));
       setWalletAmount("");
-      setStatus("✅ Nạp vào Pchain thành công!");
-      setTimeout(refreshPChainBalance, 1500);
+      setStatus(t("statusDepositPchainSuccess"));
+      setTimeout(() => {
+        refreshPChainBalance();
+        refreshData(account, pdaAddress); // Main Wallet cũng thay đổi, cần làm mới cùng lúc
+      }, 1500);
     } catch (e) {
-      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus("❌ Người dùng từ chối ký giao dịch");
-      else setStatus(`❌ Lỗi nạp vào Pchain: ${getErrMsg(e)}`);
+      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus(t("statusUserRejectedTx"));
+      else setStatus(t("statusDepositPchainError", { msg: getErrMsg(e) }));
     }
   };
 
   const handleSelectStakeProvider = (validator) => {
     if (stakeProviders.length >= 2) return;
-    if (stakeProviders.find(v => v.nodeID === validator.nodeID)) return;
-    setStakeProviders(prev => [...prev, validator]);
+    if (stakeProviders.find((v) => v.nodeID === validator.nodeID)) return;
+    setStakeProviders((prev) => [...prev, validator]);
     setStakeProviderSearch("");
     setShowStakeDropdown(false);
   };
 
   const handleRemoveStakeProvider = (nodeID) => {
-    setStakeProviders(prev => prev.filter(v => v.nodeID !== nodeID));
+    setStakeProviders((prev) => prev.filter((v) => v.nodeID !== nodeID));
   };
 
-  // --- STAKE FLR TỚI TỐI ĐA 2 VALIDATOR ĐÃ CHỌN (GIAO DỊCH THẬT TRÊN P-CHAIN) ---
-  // LƯU Ý QUAN TRỌNG: P-Chain staking chỉ nhận 1 NodeID mỗi giao dịch (khác với FTSO delegation ở trên
-  // vốn chia % cho 2 providers trong 1 lần ký). Vì vậy khi chọn 2 validator, số FLR sẽ được CHIA ĐỀU
-  // và gửi thành 2 giao dịch delegateOnP riêng biệt — MỖI giao dịch vẫn phải đạt tối thiểu 50,000 FLR
-  // theo quy định thực tế của mạng Flare.
+  // P-Chain staking chỉ nhận 1 NodeID/giao dịch: khi chọn 2 validator, số FLR chia đều thành 2 giao dịch riêng,
+  // mỗi giao dịch vẫn phải đạt tối thiểu MIN_STAKE_FLR.
   const handleStakeFLR = async () => {
-    if (stakeProviders.length === 0) { setStatus("❌ Vui lòng chọn ít nhất 1 validator"); return; }
+    if (stakeProviders.length === 0) return setStatus(t("statusSelectAtLeastOneValidator"));
     const totalVal = Number(stakeAmount || 0);
     const days = Number(stakeDays || 0);
-    if (totalVal <= 0) { setStatus("❌ Vui lòng nhập số lượng staking hợp lệ"); return; }
-    if (days < MIN_STAKE_DAYS) { setStatus(`❌ Thời hạn staking tối thiểu ${MIN_STAKE_DAYS} ngày`); return; }
-    if (totalVal > Number(pChainBalance)) { setStatus("❌ Số dư Pchain không đủ, vui lòng nạp thêm"); return; }
+    if (totalVal <= 0) return setStatus(t("statusInvalidStakeAmount"));
+    if (days < MIN_STAKE_DAYS) return setStatus(t("statusMinStakeDays", { days: MIN_STAKE_DAYS }));
+    if (totalVal > Number(pChainBalance)) return setStatus(t("statusInsufficientPchain"));
 
-    // Lấy lại số liệu validator MỚI NHẤT (hạn mức có thể đã bị người khác chiếm mất kể từ lúc bạn mở danh sách)
-    setStatus("⏳ Đang kiểm tra lại hạn mức validator mới nhất...");
+    // Hạn mức validator có thể đã thay đổi kể từ lúc mở danh sách — lấy lại số liệu mới nhất trước khi ký
+    setStatus(t("statusRecheckingValidators"));
     const freshList = await fetchValidators();
-    // Ghép lại thông tin mới nhất cho đúng các validator đã chọn (theo nodeID); nếu refetch lỗi thì tạm dùng số cũ
-    const freshStakeProviders = stakeProviders.map(v => freshList?.find(f => f.nodeID === v.nodeID) || v);
+    const freshStakeProviders = stakeProviders.map((v) => freshList?.find((f) => f.nodeID === v.nodeID) || v);
 
-    // Làm tròn về số nguyên FLR: số thập phân quá dài (vd bấm MAX ra "57402.690270695...") gây lỗi quy đổi
-    // đơn vị trong SDK, khiến mạng từ chối với thông báo gây hiểu lầm "over delegated". Mức tối thiểu đã là
-    // 50,000 FLR nên bỏ phần lẻ thập phân không ảnh hưởng gì.
+    // Làm tròn số nguyên FLR: số thập phân dài (ví dụ khi bấm MAX) gây lỗi quy đổi đơn vị trong SDK
     const perValidator = Math.floor(totalVal / freshStakeProviders.length);
     if (perValidator < MIN_STAKE_FLR) {
-      setStatus(`❌ Mỗi validator cần tối thiểu ${MIN_STAKE_FLR.toLocaleString()} FLR (đang chia ${perValidator.toLocaleString()} FLR/validator)`);
-      return;
+      return setStatus(t("statusMinPerValidator", { min: MIN_STAKE_FLR.toLocaleString(), per: perValidator.toLocaleString() }));
     }
 
-    // Kiểm tra trước hạn mức còn nhận được của từng validator (tránh phải ký ví rồi mới biết bị từ chối)
-    const overCap = freshStakeProviders.find(v => v.freeSpace != null && perValidator > v.freeSpace);
+    // Chừa biên an toàn: freeSpace vẫn có thể lệch nhẹ so với thời điểm tx thật được xác nhận
+    // (người khác delegate chen vào), nên chỉ cho dùng tối đa 98% freeSpace hiện có.
+    const CAP_SAFETY_MARGIN = 0.98;
+    const overCap = freshStakeProviders.find((v) => v.freeSpace != null && perValidator > v.freeSpace * CAP_SAFETY_MARGIN);
     if (overCap) {
-      setStatus(`❌ ${overCap.name || 'Validator'} chỉ còn nhận tối đa ${Math.floor(overCap.freeSpace).toLocaleString()} FLR ngay lúc này (hạn mức thay đổi liên tục do có người khác cũng đang delegate). Chọn validator khác hoặc giảm số lượng.`);
-      return;
+      return setStatus(t("statusOverCap", { name: overCap.name || "Validator", cap: Math.floor(overCap.freeSpace * CAP_SAFETY_MARGIN).toLocaleString() }));
     }
 
-    // Kiểm tra thời hạn stake KHÔNG được vượt quá thời hạn hoạt động còn lại (self-bond) của validator —
-    // mạng sẽ từ chối nếu thời gian delegate kết thúc SAU khi validator hết hạn.
-    const buffer = 6 * 60; // trừ hao vài phút cho startTime buffer bên dưới
-    const tooShortValidator = freshStakeProviders.find(v => v.daysUntilEnd != null && v.daysUntilEnd * 86400 - buffer < days * 86400);
+    // Thời hạn stake không được vượt quá thời hạn hoạt động còn lại (self-bond) của validator
+    const buffer = 6 * 60;
+    const tooShortValidator = freshStakeProviders.find((v) => v.daysUntilEnd != null && v.daysUntilEnd * 86400 - buffer < days * 86400);
     if (tooShortValidator) {
-      setStatus(`❌ ${tooShortValidator.name || 'Validator'} chỉ còn hoạt động khoảng ${tooShortValidator.daysUntilEnd} ngày nữa, không đủ cho thời hạn ${days} ngày bạn chọn. Giảm thời hạn hoặc chọn validator khác.`);
-      return;
+      return setStatus(t("statusValidatorTooShort", { name: tooShortValidator.name || "Validator", vdays: tooShortValidator.daysUntilEnd, days }));
     }
 
     try {
-      setStatus("⏳ Đang gửi lệnh Staking (cần ký từng giao dịch, đừng đóng ví giữa chừng)...");
+      setStatus(t("statusSendingStake"));
       const wallet = await getPChainWallet();
 
       for (const validator of freshStakeProviders) {
-        // Tính startTime NGAY TRƯỚC mỗi lần gọi (không tính 1 lần trước vòng lặp) vì mỗi validator
-        // có thể mất vài chục giây để ký (đặc biệt nếu số dư Pchain nằm rải trong nhiều UTXO, ví sẽ
-        // hỏi xác nhận nhiều lần). Buffer 5 phút để tránh việc lúc gửi lên mạng thì startTime đã trôi qua.
+        // Tính startTime ngay trước mỗi lần gọi (mỗi lần ký có thể mất vài chục giây);
+        // buffer 5 phút để startTime không trôi qua trước khi giao dịch lên mạng.
         const startTime = Math.floor(Date.now() / 1000) + 5 * 60;
         const endTime = startTime + days * 24 * 60 * 60;
-        await flrNetwork.delegateOnP(wallet, Amount.nats(perValidator), validator.nodeID, startTime, endTime);
+        await FLR_NETWORK.delegateOnP(wallet, Amount.nats(perValidator), validator.nodeID, startTime, endTime);
       }
 
       setStakeAmount("");
-      setStatus("✅ Staking thành công!");
-      setTimeout(refreshPChainBalance, 1500);
+      setStatus(t("statusStakeSuccess"));
+      // Ghi ngay nodeID vừa stake vào cache để lần refresh tới không phải quét lại toàn mạng
+      if (pChainAddress) {
+        try {
+          const key = stakeNodeCacheKey(pChainAddress);
+          const existing = JSON.parse(localStorage.getItem(key) || "[]");
+          const merged = [...new Set([...(Array.isArray(existing) ? existing : []), ...freshStakeProviders.map((v) => v.nodeID)])];
+          localStorage.setItem(key, JSON.stringify(merged));
+        } catch {
+          /* bỏ qua nếu localStorage không khả dụng */
+        }
+      }
+      setTimeout(() => { refreshPChainBalance(); refreshClaimableStakingReward(); refreshMyStakes(); }, 1500);
     } catch (e) {
-      console.error("Lỗi Staking chi tiết:", e); // Mở DevTools > Console để xem đầy đủ nếu vẫn lỗi
-      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus("❌ Người dùng từ chối ký giao dịch");
-      else if (String(e?.message).includes("over delegated")) setStatus("❌ Validator vừa bị người khác lấp đầy hạn mức ngay lúc bạn ký. Vui lòng thử lại hoặc chọn validator có hạn mức dư nhiều hơn.");
-      else setStatus(`❌ Lỗi Staking: ${getErrMsg(e)} (xem Console để biết chi tiết)`);
+      console.error("Lỗi staking:", e);
+      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus(t("statusUserRejectedTx"));
+      else if (String(e?.message).toLowerCase().includes("over delegated")) setStatus(t("statusOverDelegated"));
+      else setStatus(t("statusStakeError", { msg: getErrMsg(e) }));
     }
   };
 
-  // --- CLAIM THƯỞNG STAKING ---
-  // LƯU Ý: Reward staking được cộng thẳng vào MAIN WALLET (C-Chain), KHÔNG cộng vào số dư Pchain.
-  // Đây là điểm khác so với "Đang staking"/"Chưa stake" ở trên (2 số đó luôn nằm bên P-Chain).
+  // Reward staking (pool riêng của SDK) được cộng thẳng vào Main Wallet (C-Chain), không cộng vào số dư P-Chain
   const handleClaimStaking = async () => {
-    if (Number(claimableStakingReward) <= 0) { setStatus("❌ Chưa có thưởng Staking để claim"); return; }
+    if (Number(claimableStakingReward) <= 0) return setStatus(t("statusNoClaimableReward"));
     try {
-      setStatus("⏳ Đang claim thưởng Staking...");
+      setStatus(t("statusClaimingStaking"));
       const wallet = await getPChainWallet();
-      await flrNetwork.claimStakingReward(wallet);
-      setStatus("✅ Đã claim thưởng Staking! FLR đã về Main Wallet.");
-      setClaimableStakingReward("0");
-      setTimeout(() => refreshData(account, pdaAddress), 1500); // refresh Main Wallet, không phải Pchain
+      await FLR_NETWORK.claimStakingReward(wallet);
+      setStatus(t("statusClaimStakingSuccess"));
+      setTimeout(() => { refreshClaimableStakingReward(); refreshData(account, pdaAddress); }, 1500);
     } catch (e) {
-      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus("❌ Người dùng từ chối ký giao dịch");
-      else setStatus(`❌ Lỗi Claim: ${getErrMsg(e)}`);
+      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus(t("statusUserRejectedTx"));
+      else setStatus(t("statusClaimError", { msg: getErrMsg(e) }));
     }
   };
 
-  // --- RÚT FLR TỪ PCHAIN VỀ MAIN WALLET (chỉ rút được phần đã "mở khóa" = pChainBalance) ---
-  // LƯU Ý: FLR đang trong "Đang staking" (stakedAmount) KHÔNG rút được cho tới khi hết thời hạn stake (endTime);
-  // khi hết hạn, số đó tự chuyển về pChainBalance ("Chưa stake") — lúc đó mới bấm nút này để rút tiếp về Main Wallet.
+  // FLR đang "Đang staking" không rút được cho tới khi hết thời hạn; khi hết hạn nó tự chuyển về pChainBalance
   const handleWithdrawToMain = async () => {
-    if (Number(pChainBalance) <= 0) { setStatus("❌ Không có FLR khả dụng trên Pchain để rút"); return; }
+    if (Number(pChainBalance) <= 0) return setStatus(t("statusNoPchainToWithdraw"));
     try {
-      setStatus("⏳ Đang rút về Main Wallet (export P-Chain, import C-Chain)...");
+      setStatus(t("statusWithdrawingToMain"));
       const wallet = await getPChainWallet();
-      await flrNetwork.transferToC(wallet);
-      setStatus("✅ Đã rút về Main Wallet thành công!");
-      setTimeout(() => { refreshPChainBalance(); refreshData(account, pdaAddress); }, 1500);
+      await FLR_NETWORK.transferToC(wallet);
+      setStatus(t("statusWithdrawToMainSuccess"));
+      setTimeout(() => { refreshPChainBalance(); refreshClaimableStakingReward(); refreshMyStakes(); refreshData(account, pdaAddress); }, 1500);
     } catch (e) {
-      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus("❌ Người dùng từ chối ký giao dịch");
-      else setStatus(`❌ Lỗi rút về Main Wallet: ${getErrMsg(e)}`);
+      if (e?.code === "ACTION_REJECTED" || e?.code === 4001) setStatus(t("statusUserRejectedTx"));
+      else setStatus(t("statusWithdrawToMainError", { msg: getErrMsg(e) }));
     }
   };
 
-  // --- Cờ hợp lệ dùng để disable nút khi ô nhập trống/0/vượt số dư (chặn từ UI trước khi user kịp bấm) ---
+  // ---- Derived values ----
+
+  const filteredProviders = useMemo(
+    () => PROVIDERS.filter((p) => p.name.toLowerCase().includes(providerSearch.toLowerCase())),
+    [providerSearch]
+  );
+  const filteredStakeProviders = useMemo(
+    () => validators.filter((v) => v.nodeID.toLowerCase().includes(stakeProviderSearch.toLowerCase()) || v.name?.toLowerCase().includes(stakeProviderSearch.toLowerCase())),
+    [validators, stakeProviderSearch]
+  );
+  // Tra tên validator từ danh sách validators (đã fetch) theo nodeId của một khoản đang stake
+  const getValidatorName = useCallback(
+    (nodeId) => validators.find((v) => v.nodeID === nodeId)?.name || null,
+    [validators]
+  );
+
   const walletAmountValid = Number(walletAmount) > 0;
   const pdaAmountValid = Number(pdaAmount) > 0;
+  const requiredStakeMin = MIN_STAKE_FLR * Math.max(stakeProviders.length, 1);
+  const stakeAmountValid = Number(stakeAmount) >= requiredStakeMin;
+
+  // Tổng FLR: Main Wallet (FLR+WFLR) + PDA (WFLR) + P-Chain (đang stake + chưa stake) + mọi reward đang chờ claim
+  const totalFlrHoldings =
+    Number(balances.flr) + Number(balances.wflr) + Number(balances.pdaWflr) +
+    Number(stakedAmount) + Number(pChainBalance) +
+    Number(claimableStakingReward) + Number(mainWalletFtsoReward);
+
+  // Bản tin dự phòng (2 câu ngắn) khi chưa lấy được tin sống
+  const fallbackNews = lang === "vi"
+    ? "FlareCat (FCAT) trên Flare tự động trả thưởng FXRP cho người nắm giữ, không cần stake hay claim. Mỗi giao dịch chịu phí 3%, trong đó 80% chia cho ví giữ từ 100.000 FCAT; đây là memecoin, rủi ro cao."
+    : "FlareCat (FCAT) on Flare automatically pays holders in FXRP, with no staking or claiming. Every trade carries a 3% fee, 80% of which goes to wallets holding 100,000+ FCAT; this is a memecoin, so risk is high.";
+
+  // ============================================================================
+  // RENDER
+  // ============================================================================
 
   return (
     <div style={styles.container}>
@@ -922,117 +1415,117 @@ export default function FlarePortal() {
         @keyframes marquee { 0% { transform: translate(0, 0); } 100% { transform: translate(-100%, 0); } }
         @keyframes bounce { from { transform: translateY(0); } to { transform: translateY(-25px); } }
         @keyframes pulseGlow { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+        @keyframes rewardClaimPulse {
+          0%   { box-shadow: 0 0 0px ${COLORS.PRICE_GREEN}00; transform: scale(1); }
+          50%  { box-shadow: 0 0 18px ${COLORS.PRICE_GREEN}cc; transform: scale(1.04); }
+          100% { box-shadow: 0 0 0px ${COLORS.PRICE_GREEN}00; transform: scale(1); }
+        }
       `}</style>
 
-      {/* --- QUỐC HUY Ở ĐẦU TRANG --- */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginTop: '4px', marginBottom: '2px' }}>
-        <img
-          src={quocHuyImg}
-          alt="Quốc huy"
-          style={{ width: '96px', height: 'auto', filter: `drop-shadow(0 0 12px ${COLORS.PINK}55)` }}
-        />
+      <div style={{ display: "flex", justifyContent: "center", marginTop: "4px", marginBottom: "2px" }}>
+        <img src={quocHuyImg} alt="Quốc huy" style={{ width: "96px", height: "auto", filter: `drop-shadow(0 0 12px ${COLORS.PINK}55)` }} />
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '5px' }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: "5px" }}>
+        <button
+          style={styles.helpBtn}
+          onClick={toggleLang}
+          title={lang === "vi" ? "Switch to English" : "Chuyển sang Tiếng Việt"}
+          onMouseOver={(e) => { e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}`; e.currentTarget.style.background = "#222"; }}
+          onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#161616"; }}
+        >
+          {lang === "vi" ? "🇻🇳 VI" : "🇬🇧 EN"}
+        </button>
         <button
           style={styles.helpBtn}
           onClick={() => setShowHelp(true)}
-          onMouseOver={(e) => { e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}`; e.currentTarget.style.background = '#222'; }}
-          onMouseOut={(e) => { e.currentTarget.style.boxShadow = 'none'; e.currentTarget.style.background = '#161616'; }}
+          onMouseOver={(e) => { e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}`; e.currentTarget.style.background = "#222"; }}
+          onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#161616"; }}
         >
-          ? HELP
+          {t("help")}
         </button>
       </div>
 
       {showHelp && (
         <div
-          style={{
-            ...styles.helpModal,
-            // Ghi đè để modal neo lên ĐẦU TRANG thay vì canh giữa theo chiều dọc
-            alignItems: 'flex-start',
-            overflowY: 'auto',
-            paddingTop: '16px',
-            paddingBottom: '16px'
-          }}
+          style={{ ...styles.helpModal, alignItems: "flex-start", overflowY: "auto", paddingTop: "16px", paddingBottom: "16px" }}
           onClick={() => setShowHelp(false)}
         >
           <div
-            style={{
-              ...styles.helpContent,
-              // Ghi đè để nội dung hiển thị TOÀN BỘ, không bị cắt / không có thanh cuộn
-              maxHeight: 'none',
-              overflowY: 'visible',
-              width: 'min(92vw, 480px)',
-              maxWidth: '92vw',
-              margin: '0 auto'
-            }}
+            style={{ ...styles.helpContent, maxHeight: "none", overflowY: "visible", width: "min(92vw, 480px)", maxWidth: "92vw", margin: "0 auto" }}
             onClick={(e) => e.stopPropagation()}
           >
-            {/* --- QUỐC HUY Ở ĐẦU MODAL HELP --- */}
-            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '14px' }}>
-              <img
-                src={quocHuyImg}
-                alt="Quốc huy"
-                style={{ width: '84px', height: 'auto', filter: `drop-shadow(0 0 10px ${COLORS.PINK}55)` }}
-              />
+            <div style={{ display: "flex", justifyContent: "center", marginBottom: "14px" }}>
+              <img src={quocHuyImg} alt="Quốc huy" style={{ width: "84px", height: "auto", filter: `drop-shadow(0 0 10px ${COLORS.PINK}55)` }} />
             </div>
-            <h3 style={{ margin: '0 0 10px 0', textAlign: 'center', color: '#fff', fontSize: '15px' }}>HƯỚNG DẪN ỦY QUYỀN FLR</h3>
-            <p style={{ fontSize: '11px', textAlign: 'center', color: COLORS.AMBER, marginBottom: '15px', fontStyle: 'italic' }}>Tham gia chứng thực thông tin giá cả để kiếm lời</p>
-            <div style={styles.stepTitle}>Bước 1: Kết nối ví</div><div style={styles.stepText}>• Bấm "KẾT NỐI VÍ CỦA BẠN" và ký giao dịch.</div>
-            <div style={styles.stepTitle}>Bước 2: Nạp thẳng vào PDA</div><div style={styles.stepText}>• Nhập số FLR rồi bấm "⚡ NẠP THẲNG VÀO PDA" — hệ thống tự Wrap và chuyển WFLR vào PDA giúp bạn, không cần bấm Wrap riêng.</div>
-            <div style={styles.stepTitle}>Bước 3: Ủy quyền (Delegation)</div><div style={styles.stepText}>• Chọn 2 providers để Delegate.</div>
-            <div style={styles.stepTitle}>Bước 4: Nhận thưởng </div><div style={styles.stepText}>• Mỗi 3,5 ngày bấm "CLAIM" để nhận thưởng.</div>
-            <div style={styles.stepTitle}>Bước 5: Rút về Main Wallet</div><div style={styles.stepText}>• Trong PDA, bấm "⤺ RÚT FLR VỀ MAIN WALLET" — hệ thống tự Unwrap và trả về FLR, không cần bấm Unwrap riêng.</div>
-            <div style={styles.stepTitle}>Wrap / Unwrap riêng</div><div style={styles.stepText}>• Chỉ dùng khi bạn muốn giữ WFLR trong Main Wallet cho mục đích khác — không cần thiết cho việc nạp/rút PDA.</div>
+            <h3 style={{ margin: "0 0 10px 0", textAlign: "center", color: "#fff", fontSize: "15px" }}>{t("helpModalTitle")}</h3>
+            <p style={{ fontSize: "11px", textAlign: "center", color: COLORS.AMBER, marginBottom: "15px", fontStyle: "italic" }}>{t("helpModalSubtitle")}</p>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '18px 0 12px' }}>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
-              <span style={{ fontSize: 10, color: STAKE_COLOR, letterSpacing: '1px', fontWeight: 'bold' }}>STAKING FLR (P-CHAIN)</span>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
+            <div style={styles.stepTitle}>{t("delegationStep1Title")}</div><div style={styles.stepText}>{t("delegationStep1Text")}</div>
+            <div style={styles.stepTitle}>{t("delegationStep2Title")}</div><div style={styles.stepText}>{t("delegationStep2Text")}</div>
+            <div style={styles.stepTitle}>{t("delegationStep3Title")}</div><div style={styles.stepText}>{t("delegationStep3Text")}</div>
+            <div style={styles.stepTitle}>{t("delegationStep4Title")}</div><div style={styles.stepText}>{t("delegationStep4Text")}</div>
+            <div style={styles.stepTitle}>{t("delegationStep5Title")}</div><div style={styles.stepText}>{t("delegationStep5Text")}</div>
+            <div style={styles.stepTitle}>{t("wrapUnwrapTitle")}</div><div style={styles.stepText}>{t("wrapUnwrapText")}</div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "18px 0 12px" }}>
+              <div style={{ flex: 1, height: 1, background: "#222" }} />
+              <span style={{ fontSize: 10, color: STAKE_COLOR, letterSpacing: "1px", fontWeight: "bold" }}>{t("stakingSectionDivider")}</span>
+              <div style={{ flex: 1, height: 1, background: "#222" }} />
             </div>
 
-            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>Bước 1: Lấy địa chỉ P-Chain</div>
-            <div style={styles.stepText}>• Bấm "🔑 LẤY ĐỊA CHỈ P-CHAIN" và ký xác nhận (chỉ cần làm 1 lần).</div>
+            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>{t("stakingStep1Title")}</div>
+            <div style={styles.stepText}>{t("stakingStep1Text")}</div>
+            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>{t("stakingStep2Title")}</div>
+            <div style={styles.stepText}>{t("stakingStep2Text")}</div>
+            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>{t("stakingStep3Title")}</div>
+            <div style={styles.stepText}>{t("stakingStep3Text", { min: MIN_STAKE_FLR.toLocaleString() })}</div>
+            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>{t("stakingStep4Title")}</div>
+            <div style={styles.stepText}>{t("stakingStep4Text", { days: MIN_STAKE_DAYS })}</div>
+            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>{t("stakingStep5Title")}</div>
+            <div style={styles.stepText}>{t("stakingStep5Text")}</div>
 
-            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>Bước 2: Nạp FLR vào P-Chain</div>
-            <div style={styles.stepText}>• Ở khối Main Wallet, nhập số FLR rồi bấm "⇄ NẠP VÀO PCHAIN" — hệ thống tự chuyển FLR từ C-Chain sang P-Chain.</div>
-
-            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>Bước 3: Chọn validator</div>
-            <div style={styles.stepText}>• Chọn tối đa 2 validator từ danh sách. Mỗi validator cần tối thiểu {MIN_STAKE_FLR.toLocaleString()} FLR; chọn 2 validator sẽ tự chia đều số FLR staking cho 2 giao dịch riêng biệt.</div>
-
-            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>Bước 4: Nhập số lượng & thời hạn</div>
-            <div style={styles.stepText}>• Nhập số FLR muốn staking và thời hạn (tối thiểu {MIN_STAKE_DAYS} ngày), rồi bấm "🔒 STAKING FLR" và ký từng giao dịch.</div>
-
-            <div style={{ ...styles.stepTitle, color: STAKE_COLOR }}>Bước 5: Nhận & rút thưởng</div>
-            <div style={styles.stepText}>• Thưởng staking sẽ cộng thẳng vào Main Wallet — bấm "🎁 CLAIM" khi có thưởng. Sau khi hết hạn stake, số FLR quay lại mục "Chưa stake" — bấm "🔙 RÚT VỀ MAIN WALLET" để rút về ví chính.</div>
-
-            <GlowButton onClick={() => setShowHelp(false)} baseColor={COLORS.PINK} customStyle={{ width: '100%', padding: '12px', marginTop: '20px' }}>ĐÃ HIỂU</GlowButton>
+            <GlowButton onClick={() => setShowHelp(false)} baseColor={COLORS.PINK} customStyle={{ width: "100%", padding: "12px", marginTop: "20px" }}>
+              {t("gotIt")}
+            </GlowButton>
           </div>
         </div>
       )}
 
       {showNetworkModal && (
         <div style={styles.networkModal}>
-          <div style={{ background: COLORS.SURFACE, border: `1px solid ${COLORS.PINK}`, padding: '30px', borderRadius: '24px', maxWidth: '300px' }}>
-            <div style={{ fontSize: '40px', marginBottom: '15px' }}>🌐</div>
-            <h3 style={{ margin: '0 0 10px 0' }}>SAI MẠNG KẾT NỐI</h3>
-            <p style={{ fontSize: '13px', color: COLORS.TEXT_MUTE, marginBottom: '20px' }}>Ứng dụng yêu cầu mạng <b>Flare Mainnet</b> để hoạt động.</p>
-            <GlowButton onClick={handleSwitchNetwork} baseColor={COLORS.PINK} customStyle={{ width: '100%', padding: '15px' }}>CHUYỂN SANG FLARE</GlowButton>
+          <div style={{ background: COLORS.SURFACE, border: `1px solid ${COLORS.PINK}`, padding: "30px", borderRadius: "24px", maxWidth: "300px" }}>
+            <div style={{ fontSize: "40px", marginBottom: "15px" }}>🌐</div>
+            <h3 style={{ margin: "0 0 10px 0" }}>{t("wrongNetworkTitle")}</h3>
+            <p style={{ fontSize: "13px", color: COLORS.TEXT_MUTE, marginBottom: "20px" }}>
+              {lang === "vi" ? <>Ứng dụng yêu cầu mạng <b>Flare Mainnet</b> để hoạt động.</> : <>This app requires the <b>Flare Mainnet</b> network to function.</>}
+            </p>
+            <GlowButton onClick={handleSwitchNetwork} baseColor={COLORS.PINK} customStyle={{ width: "100%", padding: "15px" }}>{t("switchToFlare")}</GlowButton>
           </div>
         </div>
       )}
 
       {showConnectModal && (
         <div style={styles.networkModal} onClick={() => setShowConnectModal(false)}>
-          <div style={{ background: COLORS.SURFACE, border: `1px solid ${COLORS.BORDER}`, padding: '25px', borderRadius: '24px', width: '320px' }} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ margin: '0 0 20px 0', fontSize: '14px', letterSpacing: '1px', color: '#fff' }}>CHỌN PHƯƠNG THỨC KẾT NỐI</h3>
-            <button onClick={connectMetaMask} style={{ ...styles.btnBase, background: '#161616', color: 'white', width: '100%', padding: '14px', marginBottom: '12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid #222' }} onMouseOver={(e) => { e.currentTarget.style.borderColor = COLORS.PINK; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}44`; }} onMouseOut={(e) => { e.currentTarget.style.borderColor = '#222'; e.currentTarget.style.boxShadow = 'none'; }}>
-              <span>🦊 MetaMask (Extension)</span><span style={{ fontSize: '10px', color: COLORS.TEXT_MUTE }}>Browser</span>
+          <div style={{ background: COLORS.SURFACE, border: `1px solid ${COLORS.BORDER}`, padding: "25px", borderRadius: "24px", width: "320px" }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ margin: "0 0 20px 0", fontSize: "14px", letterSpacing: "1px", color: "#fff" }}>{t("chooseConnectMethod")}</h3>
+            <button
+              onClick={connectMetaMask}
+              style={{ ...styles.btnBase, background: "#161616", color: "white", width: "100%", padding: "14px", marginBottom: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid #222" }}
+              onMouseOver={(e) => { e.currentTarget.style.borderColor = COLORS.PINK; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}44`; }}
+              onMouseOut={(e) => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.boxShadow = "none"; }}
+            >
+              <span>{t("metamaskOption")}</span><span style={{ fontSize: "10px", color: COLORS.TEXT_MUTE }}>{t("browserLabel")}</span>
             </button>
-            <button onClick={connectEllipal} style={{ ...styles.btnBase, background: '#161616', color: 'white', width: '100%', padding: '14px', marginBottom: '20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid #222' }} onMouseOver={(e) => { e.currentTarget.style.borderColor = COLORS.AMBER; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.AMBER}44`; }} onMouseOut={(e) => { e.currentTarget.style.borderColor = '#222'; e.currentTarget.style.boxShadow = 'none'; }}>
-              <span>📱 Ellipal App (WalletConnect)</span><span style={{ fontSize: '10px', color: COLORS.TEXT_MUTE }}>QR Code</span>
+            <button
+              onClick={connectEllipal}
+              style={{ ...styles.btnBase, background: "#161616", color: "white", width: "100%", padding: "14px", marginBottom: "20px", display: "flex", alignItems: "center", justifyContent: "space-between", border: "1px solid #222" }}
+              onMouseOver={(e) => { e.currentTarget.style.borderColor = COLORS.AMBER; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.AMBER}44`; }}
+              onMouseOut={(e) => { e.currentTarget.style.borderColor = "#222"; e.currentTarget.style.boxShadow = "none"; }}
+            >
+              <span>{t("ellipalOption")}</span><span style={{ fontSize: "10px", color: COLORS.TEXT_MUTE }}>{t("qrCodeLabel")}</span>
             </button>
-            <div onClick={() => setShowConnectModal(false)} style={{ fontSize: '12px', color: COLORS.TEXT_MUTE, cursor: 'pointer', textDecoration: 'underline' }}>Đóng</div>
+            <div onClick={() => setShowConnectModal(false)} style={{ fontSize: "12px", color: COLORS.TEXT_MUTE, cursor: "pointer", textDecoration: "underline" }}>{t("close")}</div>
           </div>
         </div>
       )}
@@ -1041,404 +1534,587 @@ export default function FlarePortal() {
         <div style={styles.qrOverlay} onClick={() => setShowQR(false)}>
           <div style={styles.qrContainer} onClick={(e) => e.stopPropagation()}><QRCodeSVG value={account} size={220} /></div>
           <div style={styles.copyBadge} onClick={(e) => { e.stopPropagation(); handleCopy(account); }}>
-            <span style={{ color: copied ? COLORS.PRICE_GREEN : COLORS.PINK, fontFamily: 'monospace', fontSize: '13px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{account}</span>
-            <span style={{ fontSize: '14px' }}>{copied ? "✅" : "📋"}</span>
+            <span style={{ color: copied ? COLORS.PRICE_GREEN : COLORS.PINK, fontFamily: "monospace", fontSize: "13px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{account}</span>
+            <span style={{ fontSize: "14px" }}>{copied ? "✅" : "📋"}</span>
           </div>
-          <div style={{ fontSize: '10px', color: COLORS.TEXT_MUTE, marginTop: '8px', marginBottom: '25px' }}>{copied ? "Địa chỉ đã được copy!" : "Click vào địa chỉ để copy"}</div>
-          <GlowButton onClick={() => setShowQR(false)} baseColor={COLORS.PINK} customStyle={{ padding: '12px 40px', borderRadius: '20px' }}>ĐÓNG</GlowButton>
+          <div style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, marginTop: "8px", marginBottom: "25px" }}>{copied ? t("addressCopied") : t("clickToCopy")}</div>
+          <GlowButton onClick={() => setShowQR(false)} baseColor={COLORS.PINK} customStyle={{ padding: "12px 40px", borderRadius: "20px" }}>{t("closeCaps")}</GlowButton>
         </div>
       )}
 
-      <header style={{ textAlign: 'center', marginBottom: '10px', marginTop: '5px' }}>
-        <h2 style={{ color: COLORS.PINK, letterSpacing: '3px', margin: 0 }}>FLARE VN <span style={{ fontWeight: 300, color: '#fff' }}>MANAGER </span></h2>
+      <header style={{ textAlign: "center", marginBottom: "10px", marginTop: "5px" }}>
+        <h2 style={{ color: COLORS.PINK, letterSpacing: "3px", margin: 0 }}>
+          {t("appTitle")} <span style={{ fontWeight: 300, color: "#fff" }}>{t("appSubtitle")} </span>
+        </h2>
 
-        <div style={{
-          fontSize: '18px',
-          color: '#00BFFF',
-          fontWeight: 'bold',
-          marginTop: '4px',
-          fontFamily: 'monospace',
-          letterSpacing: '1px'
-        }}>
+        <div style={{ fontSize: "18px", color: "#00BFFF", fontWeight: "bold", marginTop: "4px", fontFamily: "monospace", letterSpacing: "1px" }}>
           {formatCurrentTime(currentTime)}
         </div>
 
         {account && (
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '14px', flexWrap: 'wrap' }}>
-            <div onClick={() => setShowQR(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', background: '#161616', padding: '6px 14px', borderRadius: '20px', border: `1px solid ${COLORS.BORDER}`, cursor: 'pointer' }}>
-              <span style={{ fontSize: '12px', color: COLORS.PINK, fontWeight: 'bold' }}>{account.slice(0, 6)}...{account.slice(-4)}</span><span>📲</span>
+          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "8px", marginTop: "14px", flexWrap: "wrap" }}>
+            <div onClick={() => setShowQR(true)} style={{ display: "inline-flex", alignItems: "center", gap: "6px", background: "#161616", padding: "6px 14px", borderRadius: "20px", border: `1px solid ${COLORS.BORDER}`, cursor: "pointer" }}>
+              <span style={{ fontSize: "12px", color: COLORS.PINK, fontWeight: "bold" }}>{account.slice(0, 6)}...{account.slice(-4)}</span><span>📲</span>
             </div>
-            <button onClick={() => handleOpenExplorer(account)} style={styles.scanBtn} onMouseOver={(e) => { e.currentTarget.style.color = COLORS.PRICE_GREEN; e.currentTarget.style.borderColor = COLORS.PRICE_GREEN; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PRICE_GREEN}55`; }} onMouseOut={(e) => { e.currentTarget.style.color = COLORS.TEXT_MUTE; e.currentTarget.style.borderColor = COLORS.BORDER; e.currentTarget.style.boxShadow = "none"; }}>🔍 Scan</button>
-            <button onClick={disconnect} style={styles.logoutBtn} onMouseOver={(e) => { e.currentTarget.style.color = COLORS.PINK; e.currentTarget.style.borderColor = COLORS.PINK; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}55`; }} onMouseOut={(e) => { e.currentTarget.style.color = COLORS.TEXT_MUTE; e.currentTarget.style.borderColor = COLORS.BORDER; e.currentTarget.style.boxShadow = "none"; }}>Logout</button>
+            <button onClick={() => handleOpenExplorer(account)} style={styles.scanBtn} onMouseOver={(e) => { e.currentTarget.style.color = COLORS.PRICE_GREEN; e.currentTarget.style.borderColor = COLORS.PRICE_GREEN; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PRICE_GREEN}55`; }} onMouseOut={(e) => { e.currentTarget.style.color = COLORS.TEXT_MUTE; e.currentTarget.style.borderColor = COLORS.BORDER; e.currentTarget.style.boxShadow = "none"; }}>{t("scan")}</button>
+            <button onClick={disconnect} style={styles.logoutBtn} onMouseOver={(e) => { e.currentTarget.style.color = COLORS.PINK; e.currentTarget.style.borderColor = COLORS.PINK; e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}55`; }} onMouseOut={(e) => { e.currentTarget.style.color = COLORS.TEXT_MUTE; e.currentTarget.style.borderColor = COLORS.BORDER; e.currentTarget.style.boxShadow = "none"; }}>{t("logout")}</button>
           </div>
         )}
       </header>
 
       <div style={styles.tickerWrap}>
         <div style={styles.ticker}>
-          <span style={{ ...styles.assetName, color: '#F7931A' }}>BTC</span><span style={styles.assetPrice}>${prices.btc.toLocaleString()}</span>
-          <span style={{ ...styles.assetName, color: '#627EEA' }}>ETH</span><span style={styles.assetPrice}>${prices.eth.toLocaleString()}</span>
-          <span style={{ ...styles.assetName, color: '#23292F', background: '#fff', padding: '2px 4px', borderRadius: '3px' }}>XRP</span><span style={styles.assetPrice}>${prices.xrp}</span>
+          {/* Bản tin ở đầu thanh cuộn: tin sống (tiêu đề + nguồn, bấm mở bài gốc), dự phòng bằng tin tĩnh.
+              Tiêu đề render dưới dạng text của React, không dùng dangerouslySetInnerHTML. */}
+          <span style={{ ...styles.assetPrice, color: COLORS.AMBER, marginRight: 28, whiteSpace: "nowrap" }}>
+            📰{" "}
+            {liveNews.length > 0
+              ? liveNews.map((n, i) => (
+                <React.Fragment key={n.link}>
+                  <a href={n.link} target="_blank" rel="noopener noreferrer" style={{ color: "inherit", textDecoration: "none" }}>
+                    {n.title} <small style={{ opacity: 0.7 }}>({n.source})</small>
+                  </a>
+                  {i < liveNews.length - 1 && " · "}
+                </React.Fragment>
+              ))
+              : fallbackNews}
+          </span>
+
+          <span style={{ ...styles.assetName, color: "#F7931A" }}>BTC</span><span style={styles.assetPrice}>${prices.btc.toLocaleString()}</span>
+          <span style={{ ...styles.assetName, color: "#627EEA" }}>ETH</span><span style={styles.assetPrice}>${prices.eth.toLocaleString()}</span>
+          <span style={{ ...styles.assetName, color: "#23292F", background: "#fff", padding: "2px 4px", borderRadius: "3px" }}>XRP</span><span style={styles.assetPrice}>${prices.xrp}</span>
           <span style={{ ...styles.assetName, color: COLORS.PINK }}>FLR</span><span style={styles.assetPrice}>${prices.flr}</span>
-          <span style={{ ...styles.assetName, color: '#00ADEF' }}>SGB</span><span style={styles.assetPrice}>${prices.sgb}</span>
-          <span style={{ ...styles.assetName, color: '#345D9D' }}>LTC</span><span style={styles.assetPrice}>${prices.ltc}</span>
-          <span style={{ ...styles.assetName, color: '#C2A633' }}>DOGE</span><span style={styles.assetPrice}>${prices.doge}</span>
-          <span style={{ ...styles.assetName, color: '#17181B', background: SOLID_GOLD, padding: '2px 4px', borderRadius: '3px' }}>CMC20</span><span style={styles.assetPrice}>${prices.cmc20}</span>
+          <span style={{ ...styles.assetName, color: FCAT_COLOR }}>FCAT</span>
+          <span style={styles.assetPrice}>
+            ${formatTinyPrice(fcat.price)}
+            {fcat.change24h !== 0 && (
+              <small style={{ marginLeft: 4, color: fcat.change24h >= 0 ? COLORS.PRICE_GREEN : "#ff4444" }}>
+                {fcat.change24h >= 0 ? "▲" : "▼"}{Math.abs(fcat.change24h).toFixed(1)}%
+              </small>
+            )}
+          </span>
+          <span style={{ ...styles.assetName, color: "#00ADEF" }}>SGB</span><span style={styles.assetPrice}>${prices.sgb}</span>
+          <span style={{ ...styles.assetName, color: "#345D9D" }}>LTC</span><span style={styles.assetPrice}>${prices.ltc}</span>
+          <span style={{ ...styles.assetName, color: "#C2A633" }}>DOGE</span><span style={styles.assetPrice}>${prices.doge}</span>
+          <span style={{ ...styles.assetName, color: "#17181B", background: SOLID_GOLD, padding: "2px 4px", borderRadius: "3px" }}>CMC20</span><span style={styles.assetPrice}>${prices.cmc20}</span>
         </div>
       </div>
 
       {!account ? (
         <>
-          <GlowButton onClick={() => setShowConnectModal(true)} baseColor={COLORS.PINK} customStyle={{ width: '100%', padding: '18px' }}>KẾT NỐI VÍ CỦA BẠN</GlowButton>
-
-          {/* Nếu MetaMask có mặt nhưng chưa ở mạng Flare Mainnet, gợi ý thêm mạng ngay tại đây */}
+          <GlowButton onClick={() => setShowConnectModal(true)} baseColor={COLORS.PINK} customStyle={{ width: "100%", padding: "18px" }}>{t("connectWallet")}</GlowButton>
           {typeof window !== "undefined" && window.ethereum && !isFlrNetworkAdded && (
-            <GlowButton
-              onClick={handleAddFlareNetwork}
-              baseColor={SOLID_GOLD}
-              textColor="black"
-              customStyle={{ width: '100%', padding: '14px', marginTop: 10 }}
-            >
-              🌐 THÊM MẠNG FLARE MAINNET VÀO METAMASK
+            <GlowButton onClick={handleAddFlareNetwork} baseColor={SOLID_GOLD} textColor="black" customStyle={{ width: "100%", padding: "14px", marginTop: 10 }}>
+              {t("addFlareNetwork")}
             </GlowButton>
           )}
         </>
       ) : (
         <>
+          <section style={{ ...styles.card, border: `2px solid ${SOLID_GOLD}66`, textAlign: "center", padding: "14px 16px" }}>
+            <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, letterSpacing: "1px", marginBottom: 6, fontWeight: "bold" }}>
+              {lang === "vi" ? "TỔNG TÀI SẢN FLR (VÍ + PDA + PCHAIN)" : "TOTAL FLR HOLDINGS (WALLET + PDA + PCHAIN)"}
+            </div>
+
+            {/* LIVE FLR PRICE TAG — dùng đúng prices.flr (nguồn toUSD() bên dưới cũng dùng), nhịp theo mỗi lần
+                poll CoinGecko (60s). Flash xanh/đỏ 1.2s khi giá vừa đổi, rồi trở lại màu vàng gold mặc định. */}
+            <div style={{
+              display: "inline-flex", alignItems: "center", gap: 8,
+              background: "#0a0a0a",
+              border: `1px solid ${flrFlash === "up" ? COLORS.PRICE_GREEN : flrFlash === "down" ? "#ff4444" : SOLID_GOLD + "55"}`,
+              borderRadius: 20, padding: "6px 16px", marginBottom: 10,
+              boxShadow: flrFlash ? `0 0 14px ${flrFlash === "up" ? COLORS.PRICE_GREEN : "#ff4444"}77` : "none",
+              transition: "border-color 0.3s, box-shadow 0.3s"
+            }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: COLORS.PRICE_GREEN, animation: "pulseGlow 1.4s infinite" }} />
+              <span style={{ fontSize: 10, fontWeight: "bold", color: COLORS.TEXT_MUTE, letterSpacing: "1px" }}>FLR/USD</span>
+              <span style={{
+                fontSize: 21, fontWeight: "900", fontFamily: "monospace",
+                color: flrFlash === "up" ? COLORS.PRICE_GREEN : flrFlash === "down" ? "#ff4444" : SOLID_GOLD,
+                transition: "color 0.3s"
+              }}>
+                ${prices.flr.toLocaleString(undefined, { minimumFractionDigits: 4, maximumFractionDigits: 4 })}
+              </span>
+              {prices.flrChange24h !== 0 && (
+                <span style={{ fontSize: 11, fontWeight: "bold", color: prices.flrChange24h >= 0 ? COLORS.PRICE_GREEN : "#ff4444" }}>
+                  {prices.flrChange24h >= 0 ? "▲" : "▼"}{Math.abs(prices.flrChange24h).toFixed(2)}%
+                </span>
+              )}
+            </div>
+
+            <div style={{ fontSize: 27, fontWeight: "900", ...goldTextStyle }}>
+              {formatBalance(totalFlrHoldings)} <small style={{ fontSize: 18 }}> FLR</small>
+            </div>
+            <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE, marginTop: 2 }}>{toUSD(totalFlrHoldings)}</div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 14, marginTop: 10, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE }}>{t("mainWallet")}: <span style={{ color: COLORS.PRICE_GREEN, fontWeight: "bold" }}>{formatBalance(Number(balances.flr) + Number(balances.wflr))}</span></div>
+              <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE }}>PDA: <span style={{ color: COLORS.PRICE_GREEN, fontWeight: "bold" }}>{formatBalance(balances.pdaWflr)}</span></div>
+              <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE }}>{t("stakingTitle")}: <span style={{ color: COLORS.PRICE_GREEN, fontWeight: "bold" }}>{formatBalance(Number(stakedAmount) + Number(pChainBalance))}</span></div>
+              {Number(claimableStakingReward) > 0 && (
+                <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE }}>{lang === "vi" ? "Reward chờ claim" : "Pending reward"}: <span style={{ color: COLORS.PRICE_GREEN, fontWeight: "bold" }}>{formatBalance(claimableStakingReward)}</span></div>
+              )}
+              {Number(mainWalletFtsoReward) > 0 && (
+                <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE }}>{lang === "vi" ? "Delegation reward (ví chính)" : "Delegation reward (main wallet)"}: <span style={{ color: COLORS.PRICE_GREEN, fontWeight: "bold" }}>{formatBalance(mainWalletFtsoReward)}</span></div>
+              )}
+            </div>
+          </section>
+
           <section style={{ ...styles.card, border: `2px solid ${COLORS.PINK}44` }}>
-            <div style={{ ...styles.label, color: COLORS.PINK }}>MAIN WALLET</div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 15 }}>
+            <div style={{ ...styles.label, color: COLORS.PINK }}>{t("mainWallet")}</div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 15 }}>
               <div>
-                <div style={{ fontSize: 24, fontWeight: '900', color: COLORS.PRICE_GREEN }}>
-                  {formatBalance(balances.flr)} <small style={{ fontSize: 18, color: COLORS.PINK }}> FLR</small>
-                </div>
+                <div style={{ fontSize: 24, fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(balances.flr)} <small style={{ fontSize: 18, color: COLORS.PINK }}> FLR</small></div>
                 <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE }}>{toUSD(balances.flr)}</div>
               </div>
-              <div style={{ textAlign: 'right' }}>
-                <div style={{ fontSize: 24, fontWeight: '900', color: COLORS.PRICE_GREEN }}>
-                  {formatBalance(balances.wflr)} <small style={{ fontSize: 18, color: COLORS.PINK }}> WFLR</small>
-                </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 24, fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(balances.wflr)} <small style={{ fontSize: 18, color: COLORS.PINK }}> WFLR</small></div>
                 <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE }}>{toUSD(balances.wflr)}</div>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-              <input type="number" value={walletAmount} onChange={(e) => setWalletAmount(e.target.value)} style={styles.input} placeholder="Nhập số lượng FLR..." />
-              <GlowButton onClick={() => setWalletAmount(balances.flr)} baseColor={COLORS.PINK}>MAX</GlowButton>
+
+            {Number(mainWalletFtsoReward) > 0 && (
+              <RewardClaimBox
+                message={lang === "vi" ? "🔔 Có delegation reward trên ví chính:" : "🔔 Delegation reward pending on your main wallet"}
+                amount={`${t("claim")} · ${formatBalance(mainWalletFtsoReward)} FLR`}
+                onClaim={handleClaimMainWalletFtsoReward}
+                baseColor={COLORS.PRICE_GREEN}
+                pulse
+              />
+            )}
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <input type="number" value={walletAmount} onChange={(e) => setWalletAmount(e.target.value)} style={styles.input} placeholder={t("enterAmount")} />
+              <GlowButton onClick={() => setWalletAmount(balances.flr)} baseColor={COLORS.PINK}>{t("max")}</GlowButton>
             </div>
 
-            {/* Cả 2 nút dùng chung nền hồng đặc trưng; chỉ viền + chữ + hiệu ứng /// đổi màu theo đích đến (PDA: vàng · Pchain: xanh) */}
-            {/* FIX: cả 2 nút giờ bị disabled khi chưa nhập số lượng hợp lệ, tránh mở ví ký giao dịch rỗng */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 8 }}>
-              <button
-                onClick={handleToPDA}
-                disabled={!walletAmountValid}
-                style={{
-                  ...styles.btnBase, width: '100%', padding: '15px',
-                  background: COLORS.PINK, color: 'white',
-                  border: `3px solid ${SOLID_GOLD}`, position: 'relative', overflow: 'hidden',
-                  ...(!walletAmountValid ? { opacity: 0.5, cursor: 'not-allowed' } : {})
-                }}
-                onMouseOver={(e) => {
-                  if (!walletAmountValid) return;
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = SOLID_GOLD;
-                  e.currentTarget.style.boxShadow = `0 0 15px ${SOLID_GOLD}88`;
-                }}
-                onMouseOut={(e) => {
-                  if (!walletAmountValid) return;
-                  e.currentTarget.style.background = COLORS.PINK;
-                  e.currentTarget.style.color = "white";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              >
-                <span style={{ position: 'absolute', top: -6, right: 6, display: 'flex', fontSize: 34, fontWeight: '900', color: SOLID_GOLD, opacity: 0.85, lineHeight: 1, letterSpacing: '-6px' }}>///</span>
-                <span style={{ position: 'relative', zIndex: 1 }}>⚡ NẠP VÀO PDA</span>
-              </button>
-              <button
-                onClick={handleDepositToPChain}
-                disabled={!walletAmountValid}
-                style={{
-                  ...styles.btnBase, width: '100%', padding: '15px',
-                  background: COLORS.PINK, color: 'white',
-                  border: `3px solid ${STAKE_COLOR}`, position: 'relative', overflow: 'hidden',
-                  ...(!walletAmountValid ? { opacity: 0.5, cursor: 'not-allowed' } : {})
-                }}
-                onMouseOver={(e) => {
-                  if (!walletAmountValid) return;
-                  e.currentTarget.style.background = "transparent";
-                  e.currentTarget.style.color = STAKE_COLOR;
-                  e.currentTarget.style.boxShadow = `0 0 15px ${STAKE_COLOR}88`;
-                }}
-                onMouseOut={(e) => {
-                  if (!walletAmountValid) return;
-                  e.currentTarget.style.background = COLORS.PINK;
-                  e.currentTarget.style.color = "white";
-                  e.currentTarget.style.boxShadow = "none";
-                }}
-              >
-                <span style={{ position: 'absolute', top: -6, right: 6, display: 'flex', fontSize: 34, fontWeight: '900', color: STAKE_COLOR, opacity: 0.85, lineHeight: 1, letterSpacing: '-6px' }}>///</span>
-                <span style={{ position: 'relative', zIndex: 1 }}>⇄ NẠP VÀO PCHAIN</span>
-              </button>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
+              <AccentActionButton onClick={handleToPDA} disabled={!walletAmountValid} accentColor={SOLID_GOLD} label={t("depositPda")} />
+              <AccentActionButton onClick={handleDepositToPChain} disabled={!walletAmountValid} accentColor={STAKE_COLOR} label={t("depositPchain")} />
             </div>
-            <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, textAlign: 'center', marginBottom: 14 }}>
-              <span style={{ color: SOLID_GOLD }}>/// PDA</span>: Tự động Wrap FLR {'->'} WFLR và chuyển vào PDA &nbsp;·&nbsp; <span style={{ color: STAKE_COLOR }}>/// Pchain</span>: Chuyển FLR sang P-Chain để staking</div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
-              <span style={{ fontSize: 9, color: COLORS.TEXT_MUTE, letterSpacing: '1px', whiteSpace: 'nowrap' }}>THAO TÁC RIÊNG (KHÔNG BẮT BUỘC)</span>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 14 }}>
-              <GlowButton onClick={() => handleWrap(true)} disabled={!walletAmountValid} baseColor={COLORS.PINK} customStyle={{ padding: '10px', fontSize: 12 }}>WRAP</GlowButton>
-              <GlowButton onClick={() => handleWrap(false)} disabled={!walletAmountValid} baseColor={COLORS.PINK} customStyle={{ padding: '10px', fontSize: 12 }}>UNWRAP</GlowButton>
+            <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, textAlign: "center", marginBottom: 14 }}>
+              <span style={{ color: SOLID_GOLD }}>{t("pdaNoteLabel")}</span>{t("pdaNoteText")} &nbsp;·&nbsp; <span style={{ color: STAKE_COLOR }}>{t("pchainNoteLabel")}</span>{t("pchainNoteText")}
             </div>
 
-            {/* --- SỐ DƯ USD₮0 VÀ USDT HIỂN THỊ SONG SONG --- */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: '12px' }}>
-              <div style={{
-                background: "rgba(0, 0, 0, 0.3)",
-                padding: "10px 8px",
-                borderRadius: "14px",
-                border: `1px dashed ${COLORS.PRICE_GREEN}44`,
-                textAlign: "center"
-              }}>
-                <div style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, letterSpacing: "1px", marginBottom: "4px", fontWeight: "bold" }}>
-                  USD₮0 BALANCE
-                </div>
-                <div style={{ fontSize: "19px", fontWeight: "900", color: COLORS.PRICE_GREEN }}>
-                  {formatBalance(usdt0Balance)}
-                </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <div style={{ flex: 1, height: 1, background: "#222" }} />
+              <span style={{ fontSize: 9, color: COLORS.TEXT_MUTE, letterSpacing: "1px", whiteSpace: "nowrap" }}>{t("separateActions")}</span>
+              <div style={{ flex: 1, height: 1, background: "#222" }} />
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 14 }}>
+              <GlowButton onClick={() => handleWrap(true)} disabled={!walletAmountValid} baseColor={COLORS.PINK} customStyle={{ padding: "10px", fontSize: 12 }}>{t("wrap")}</GlowButton>
+              <GlowButton onClick={() => handleWrap(false)} disabled={!walletAmountValid} baseColor={COLORS.PINK} customStyle={{ padding: "10px", fontSize: 12 }}>{t("unwrap")}</GlowButton>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: "12px" }}>
+              <div style={{ background: "rgba(0, 0, 0, 0.3)", padding: "10px 8px", borderRadius: "14px", border: `1px dashed ${COLORS.PRICE_GREEN}44`, textAlign: "center" }}>
+                <div style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, letterSpacing: "1px", marginBottom: "4px", fontWeight: "bold" }}>{t("usdt0Balance")}</div>
+                <div style={{ fontSize: "19px", fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(usdt0Balance)}</div>
                 <div style={{ fontSize: "11px", color: COLORS.PINK, fontWeight: "bold" }}>USD₮0</div>
               </div>
-              <div style={{
-                background: "rgba(0, 0, 0, 0.3)",
-                padding: "10px 8px",
-                borderRadius: "14px",
-                border: `1px dashed ${COLORS.PRICE_GREEN}44`,
-                textAlign: "center"
-              }}>
-                <div style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, letterSpacing: "1px", marginBottom: "4px", fontWeight: "bold" }}>
-                  USDT BALANCE
-                </div>
-                <div style={{ fontSize: "19px", fontWeight: "900", color: COLORS.PRICE_GREEN }}>
-                  {formatBalance(usdtBalance)}
-                </div>
+              <div style={{ background: "rgba(0, 0, 0, 0.3)", padding: "10px 8px", borderRadius: "14px", border: `1px dashed ${COLORS.PRICE_GREEN}44`, textAlign: "center" }}>
+                <div style={{ fontSize: "10px", color: COLORS.TEXT_MUTE, letterSpacing: "1px", marginBottom: "4px", fontWeight: "bold" }}>{t("usdtBalanceLabel")}</div>
+                <div style={{ fontSize: "19px", fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(usdtBalance)}</div>
                 <div style={{ fontSize: "11px", color: COLORS.PINK, fontWeight: "bold" }}>USDT</div>
               </div>
             </div>
 
-            {/* --- SWAP TỰ DO GIỮA 3 TOKEN: FLR / USD₮0 / USDT (chọn cặp & chiều ngay trong modal) --- */}
-            <GlowButton
-              onClick={() => setIsSwapOpen(true)}
-              baseColor={COLORS.PRICE_GREEN}
-              textColor="black"
-              hoverTextColor={COLORS.PRICE_GREEN}
-              customStyle={{ width: '100%' }}
-            >
-              🗘 SWAP FLR / USD₮0 / USDT
+            <GlowButton onClick={() => setIsSwapOpen(true)} baseColor={COLORS.PRICE_GREEN} textColor="black" hoverTextColor={COLORS.PRICE_GREEN} customStyle={{ width: "100%" }}>
+              {t("swap")}
             </GlowButton>
           </section>
 
           <section style={{ ...styles.card, border: `2px solid ${STAKE_COLOR}44` }}>
-            <div style={{ ...styles.label, color: STAKE_COLOR }}>STAKING FLR (P-CHAIN)</div>
+            <div style={{ ...styles.label, color: STAKE_COLOR }}>{t("stakingTitle")}</div>
 
             {pChainAddress ? (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0a0a0a', padding: '8px 12px', borderRadius: '10px', fontSize: '10px', fontFamily: 'monospace', cursor: 'pointer', border: '1px solid #222', marginTop: '-6px', marginBottom: '15px' }} onClick={() => handleCopy(pChainAddress)} title="Click to copy">
-                <span style={{ opacity: 0.7, color: STAKE_COLOR }}>P-Chain:</span>
-                <span style={{ fontWeight: 'bold', color: STAKE_COLOR }}>{pChainAddress.slice(0, 12)}...{pChainAddress.slice(-6)} 📋</span>
+              <div
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0a0a0a", padding: "8px 12px", borderRadius: "10px", fontSize: "10px", fontFamily: "monospace", cursor: "pointer", border: "1px solid #222", marginTop: "-6px", marginBottom: "15px" }}
+                onClick={() => handleCopy(pChainAddress)}
+                title="Click to copy"
+              >
+                <span style={{ opacity: 0.7, color: STAKE_COLOR }}>{t("pchainAddressLabel")}</span>
+                <span style={{ fontWeight: "bold", color: STAKE_COLOR }}>{pChainAddress.slice(0, 12)}...{pChainAddress.slice(-6)} 📋</span>
               </div>
             ) : (
-              <div style={{ textAlign: 'center', marginBottom: 15 }}>
-                <div style={{ fontSize: 11, color: COLORS.TEXT_MUTE, marginBottom: 10, fontStyle: 'italic' }}>
-                  Chưa có địa chỉ P-Chain. Cần ký 1 lần để suy ra địa chỉ từ public key ví của bạn.
-                </div>
-                <GlowButton onClick={initPChain} baseColor={STAKE_COLOR} textColor="black" customStyle={{ width: '100%', padding: '12px', fontSize: 12 }}>
-                  🔑 LẤY ĐỊA CHỈ P-CHAIN
-                </GlowButton>
+              <div style={{ textAlign: "center", marginBottom: 15 }}>
+                <div style={{ fontSize: 11, color: COLORS.TEXT_MUTE, marginBottom: 10, fontStyle: "italic" }}>{t("noPchainAddressText")}</div>
+                <GlowButton onClick={initPChain} baseColor={STAKE_COLOR} textColor="black" customStyle={{ width: "100%", padding: "12px", fontSize: 12 }}>{t("getPchainAddress")}</GlowButton>
               </div>
             )}
 
-            <div style={{ textAlign: 'center', marginBottom: 15 }}>
-              <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE, marginBottom: 4 }}>Đang staking</div>
-              <div style={{ fontSize: 29, fontWeight: '900', color: COLORS.PRICE_GREEN }}>
-                {formatBalance(stakedAmount)} <small style={{ fontSize: 22, color: STAKE_COLOR }}> FLR</small>
-              </div>
-              <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE, marginTop: 2 }}>{toUSD(stakedAmount)}</div>
-
-              <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'baseline', gap: 6, marginTop: 12 }}>
-                <span style={{ fontSize: 11, color: COLORS.TEXT_MUTE }}>Chưa stake (Pchain):</span>
-                <span style={{ fontSize: 14, fontWeight: 'bold', color: STAKE_COLOR }}>{formatBalance(pChainBalance)} FLR</span>
-              </div>
-            </div>
-
-            {Number(pChainBalance) > 0 && (
-              <GlowButton onClick={handleWithdrawToMain} baseColor={STAKE_COLOR} textColor="black" customStyle={{ width: '100%', padding: '10px', marginBottom: 10, fontSize: 12 }}>
-                🔙 RÚT VỀ MAIN WALLET ({formatBalance(pChainBalance)} FLR)
-              </GlowButton>
-            )}
-
-            {Number(claimableStakingReward) > 0 && (
-              <div style={{ background: '#0a0a0a', border: `1px solid ${COLORS.PRICE_GREEN}44`, borderRadius: 10, padding: '10px 12px', marginBottom: 14 }}>
-                <div style={{ fontSize: 11, color: COLORS.TEXT_MUTE, marginBottom: 6 }}>
-                  Thưởng Staking đang chờ · sẽ cộng thẳng vào <b>Main Wallet</b>
+            {pChainAddress && (
+              <>
+                {/* Chuyển đổi Tổng quan / Stake mới — tách 2 luồng thao tác để đỡ rối mắt */}
+                <div style={{ display: "flex", gap: 6, marginBottom: 16, background: "#0a0a0a", borderRadius: 12, padding: 4, border: `1px solid ${COLORS.BORDER}` }}>
+                  <button
+                    onClick={() => setStakingTab("overview")}
+                    style={{
+                      flex: 1, padding: "9px 0", borderRadius: 9, border: "none", cursor: "pointer",
+                      background: stakingTab === "overview" ? STAKE_COLOR : "transparent",
+                      color: stakingTab === "overview" ? "#000" : COLORS.TEXT_MUTE,
+                      fontWeight: "bold", fontSize: 12, transition: "background 0.15s, color 0.15s"
+                    }}
+                  >
+                    {lang === "vi" ? "Tổng quan" : "Overview"}
+                  </button>
+                  <button
+                    onClick={() => setStakingTab("new")}
+                    style={{
+                      flex: 1, padding: "9px 0", borderRadius: 9, border: "none", cursor: "pointer",
+                      background: stakingTab === "new" ? STAKE_COLOR : "transparent",
+                      color: stakingTab === "new" ? "#000" : COLORS.TEXT_MUTE,
+                      fontWeight: "bold", fontSize: 12, transition: "background 0.15s, color 0.15s"
+                    }}
+                  >
+                    {lang === "vi" ? "+ Stake mới" : "+ New stake"}
+                  </button>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ fontSize: 16, fontWeight: '900', color: COLORS.PRICE_GREEN }}>
-                    {formatBalance(claimableStakingReward)} FLR
-                  </div>
-                  <GlowButton onClick={handleClaimStaking} baseColor={COLORS.PRICE_GREEN} textColor="black" customStyle={{ padding: '8px 16px', fontSize: 12 }}>
-                    🎁 CLAIM
-                  </GlowButton>
-                </div>
-              </div>
-            )}
 
-            <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, textAlign: 'center', marginBottom: 14 }}>
-              💡 Nạp thêm FLR vào Pchain? Dùng nút <span style={{ color: STAKE_COLOR, fontWeight: 'bold' }}>NẠP VÀO PCHAIN</span> ở khối Main Wallet phía trên.
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
-              <span style={{ fontSize: 9, color: COLORS.TEXT_MUTE, letterSpacing: '1px', whiteSpace: 'nowrap' }}>CHỌN TỐI ĐA 2 VALIDATOR ĐỂ STAKE</span>
-              <div style={{ flex: 1, height: 1, background: '#222' }} />
-            </div>
-
-            <div style={{ fontSize: 10, color: COLORS.AMBER, textAlign: 'center', marginBottom: 10, lineHeight: 1.5 }}>
-              ⚠️ Mỗi validator yêu cầu tối thiểu <b>{MIN_STAKE_FLR.toLocaleString()} FLR</b>, thời hạn tối thiểu <b>{MIN_STAKE_DAYS} ngày</b>.
-              Chọn 2 validator sẽ chia đều số FLR staking cho 2 giao dịch riêng biệt.
-            </div>
-
-            {stakeProviders.map((v) => (
-              <div key={v.nodeID} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderBottom: '1px solid #222' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{
-                    width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                    background: `hsl(${(v.nodeID.charCodeAt(7) * 37) % 360}, 65%, 45%)`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 10, fontWeight: 'bold', color: '#fff'
-                  }}>
-                    {(v.name || v.nodeID.slice(7, 9)).slice(0, 2).toUpperCase()}
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 'bold', fontSize: 13 }}>
-                      {v.name || <span style={{ fontFamily: 'monospace', fontWeight: 'normal', color: COLORS.TEXT_MUTE }}>Validator ẩn danh</span>}
+                {stakingTab === "overview" && (
+                  <>
+                    {/* Hai số liệu chính đặt cạnh nhau thay vì xếp chồng theo chiều dọc */}
+                    <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                      <div style={{ flex: 1, background: "#0a0a0a", border: `1px solid ${COLORS.BORDER}`, borderRadius: 14, padding: "14px 8px", textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, marginBottom: 6 }}>{t("currentlyStaking")}</div>
+                        <div style={{ fontSize: 19, fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(stakedAmount)}</div>
+                        <div style={{ fontSize: 9, color: COLORS.TEXT_MUTE, marginTop: 2 }}>{toUSD(stakedAmount)}</div>
+                      </div>
+                      <div style={{ flex: 1, background: "#0a0a0a", border: `1px solid ${COLORS.BORDER}`, borderRadius: 14, padding: "14px 8px", textAlign: "center" }}>
+                        <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, marginBottom: 6 }}>{t("notStaked")}</div>
+                        <div style={{ fontSize: 19, fontWeight: "900", color: STAKE_COLOR }}>{formatBalance(pChainBalance)}</div>
+                        <div style={{ fontSize: 9, color: COLORS.TEXT_MUTE, marginTop: 2 }}>FLR</div>
+                      </div>
                     </div>
-                    <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: 'monospace' }}>{v.nodeID.slice(0, 14)}... · Uptime {v.uptime.toFixed(1)}% · Phí {v.delegationFee}%</div>
-                    <div style={{ fontSize: 10, color: v.freeSpace > 0 ? COLORS.PRICE_GREEN : '#ff4444' }}>Còn nhận tối đa: {Math.floor(v.freeSpace).toLocaleString()} FLR</div>
-                    {v.daysUntilEnd != null && (
-                      <div style={{ fontSize: 10, color: v.daysUntilEnd < Number(stakeDays) ? '#ff4444' : COLORS.TEXT_MUTE }}>
-                        Validator hết hạn sau ~{v.daysUntilEnd} ngày {v.daysUntilEnd < Number(stakeDays) && '⚠️ ngắn hơn thời hạn bạn chọn'}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <button onClick={() => handleRemoveStakeProvider(v.nodeID)} style={{ background: '#ff444411', border: 'none', color: '#ff4444', padding: '5px 10px', borderRadius: 8, cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = "0 0 10px #ff444455"; e.currentTarget.style.background = "#ff444433"; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#ff444411"; }}>✕</button>
-              </div>
-            ))}
 
-            {stakeProviders.length < 2 && (
-              <div ref={stakeDropdownRef} style={{ position: 'relative', marginTop: 12 }}>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                  <span style={{ position: 'absolute', left: 12, color: COLORS.TEXT_MUTE }}>🔍</span>
-                  <input type="text" placeholder={loadingValidators ? "Đang tải validator..." : "Tìm theo tên hoặc NodeID..."} value={stakeProviderSearch} onFocus={() => setShowStakeDropdown(true)} onChange={(e) => setStakeProviderSearch(e.target.value)} style={{ ...styles.input, paddingLeft: 35, width: '100%', boxSizing: 'border-box' }} />
-                </div>
-                {showStakeDropdown && (
-                  <div style={{ position: 'absolute', top: '110%', left: 0, right: 0, background: '#181818', borderRadius: 15, border: '1px solid #333', maxHeight: 200, overflowY: 'auto', zIndex: 100, boxShadow: '0 10px 20px rgba(0,0,0,0.5)' }}>
-                    {filteredStakeProviders.filter(v => !stakeProviders.find(sp => sp.nodeID === v.nodeID)).map(v => (
-                      <div key={v.nodeID} onClick={() => handleSelectStakeProvider(v)} style={{ padding: '10px 12px', fontSize: 13, borderBottom: '1px solid #222', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <div>
-                          <div style={{ fontWeight: v.name ? 'bold' : 'normal', color: v.name ? '#fff' : COLORS.TEXT_MUTE }}>
-                            {v.name || 'Validator ẩn danh'}
-                          </div>
-                          <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: 'monospace' }}>{v.nodeID.slice(0, 20)}...</div>
-                        </div>
-                        <span style={{ color: COLORS.TEXT_MUTE, fontSize: 11, whiteSpace: 'nowrap', marginLeft: 8, textAlign: 'right' }}>
-                          {v.uptime.toFixed(1)}% up · {v.delegationFee}% phí<br />
-                          {v.daysUntilEnd != null && <span>Hết hạn: ~{v.daysUntilEnd} ngày<br /></span>}
-                          <span style={{ color: v.freeSpace > 0 ? COLORS.PRICE_GREEN : '#ff4444' }}>Còn: {Math.floor(v.freeSpace).toLocaleString()} FLR</span>
+                    {/* Danh sách validator đang stake, gói trong 1 khung riêng biệt rõ ràng */}
+                    <div style={{ background: "#0a0a0a", border: `1px solid ${COLORS.BORDER}`, borderRadius: 14, padding: "12px 14px", marginBottom: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: myStakes.length > 0 ? 10 : 0 }}>
+                        <span style={{ fontSize: 11, fontWeight: "bold", color: STAKE_COLOR }}>
+                          {lang === "vi" ? "Validator đang stake" : "Active validators"}{myStakes.length > 0 ? ` (${myStakes.length})` : ""}
                         </span>
+                        <button
+                          onClick={() => refreshMyStakes()}
+                          disabled={stakesLoading}
+                          style={{ background: "transparent", border: `1px solid ${STAKE_COLOR}66`, color: STAKE_COLOR, borderRadius: 8, padding: "3px 9px", fontSize: 11, cursor: stakesLoading ? "default" : "pointer", opacity: stakesLoading ? 0.5 : 1 }}
+                        >
+                          {stakesLoading ? "…" : "🔄"}
+                        </button>
                       </div>
-                    ))}
-                    {!loadingValidators && filteredStakeProviders.length === 0 && (
-                      <div style={{ padding: 12, fontSize: 12, color: COLORS.TEXT_MUTE, textAlign: 'center' }}>Không tìm thấy validator</div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
 
-            <div style={{ display: 'flex', gap: 8, marginTop: 14, marginBottom: 8 }}>
-              <input type="number" value={stakeAmount} onChange={(e) => setStakeAmount(e.target.value)} style={styles.input} placeholder="Số lượng FLR staking..." />
-              <GlowButton onClick={() => setStakeAmount(String(Math.floor(Number(pChainBalance))))} baseColor={STAKE_COLOR}>MAX</GlowButton>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-              <span style={{ fontSize: 11, color: COLORS.TEXT_MUTE, whiteSpace: 'nowrap' }}>Thời hạn (ngày):</span>
-              <input type="number" min={MIN_STAKE_DAYS} value={stakeDays} onChange={(e) => setStakeDays(e.target.value)} style={{ ...styles.input, flex: 1 }} placeholder={`Tối thiểu ${MIN_STAKE_DAYS}`} />
-            </div>
-            <GlowButton
-              onClick={handleStakeFLR}
-              disabled={stakeProviders.length === 0 || !(Number(stakeAmount) > 0)}
-              baseColor={(stakeProviders.length === 0 || !(Number(stakeAmount) > 0)) ? "transparent" : STAKE_COLOR}
-              textColor={(stakeProviders.length === 0 || !(Number(stakeAmount) > 0)) ? COLORS.TEXT_MUTE : "black"}
-              customStyle={{ width: '100%', padding: '15px', border: (stakeProviders.length === 0 || !(Number(stakeAmount) > 0)) ? `1px solid ${COLORS.BORDER}` : 'none' }}
-            >
-              🔒 STAKING FLR
-            </GlowButton>
+                      {stakesLoading && myStakes.length === 0 && (
+                        <div style={{ textAlign: "center", fontSize: 11, color: COLORS.TEXT_MUTE, padding: "10px 0" }}>
+                          {lang === "vi"
+                            ? "Đang kiểm tra stake... (nhanh nếu chưa từng stake, tối đa 20s nếu cần dò chi tiết)"
+                            : "Checking stake status... (fast if you've never staked, up to 20s if a detailed scan is needed)"}
+                        </div>
+                      )}
+
+                      {!stakesLoading && !stakesError && myStakes.length === 0 && Number(stakedAmount) === 0 && (
+                        <div style={{ textAlign: "center", fontSize: 11, color: COLORS.TEXT_MUTE, padding: "10px 0" }}>
+                          {lang === "vi"
+                            ? <>Bạn chưa stake FLR nào. Chuyển qua tab <b style={{ color: STAKE_COLOR }}>+ Stake mới</b> để bắt đầu.</>
+                            : <>You haven't staked any FLR yet. Switch to <b style={{ color: STAKE_COLOR }}>+ New stake</b> to get started.</>}
+                        </div>
+                      )}
+
+                      {!stakesLoading && myStakes.length === 0 && (stakesError || Number(stakedAmount) > 0) && (
+                        <div style={{ padding: "6px 0" }}>
+                          <div style={{ textAlign: "center", fontSize: 11, color: COLORS.PINK, marginBottom: 10 }}>
+                            {lang === "vi"
+                              ? "Không tự động dò được validator (RPC quét cả mạng quá chậm). Chọn thủ công validator bạn đã stake để tải nhanh:"
+                              : "Couldn't auto-detect validators (full-network RPC scan is too slow). Pick the validator(s) you staked with to load quickly:"}
+                          </div>
+                          <div style={{ position: "relative" }}>
+                            <span style={{ position: "absolute", left: 12, top: 10, color: COLORS.TEXT_MUTE, fontSize: 12 }}>🔍</span>
+                            <input
+                              type="text"
+                              value={manualNodeSearch}
+                              onChange={(e) => setManualNodeSearch(e.target.value)}
+                              placeholder={lang === "vi" ? "Tìm theo tên hoặc NodeID..." : "Search by name or NodeID..."}
+                              style={{ ...styles.input, paddingLeft: 32, width: "100%", boxSizing: "border-box", fontSize: 12 }}
+                            />
+                          </div>
+                          {manualNodeSearch.trim().length > 0 && (
+                            <div style={{ marginTop: 6, maxHeight: 180, overflowY: "auto", background: "#141414", border: "1px solid #222", borderRadius: 10 }}>
+                              {validators
+                                .filter((v) =>
+                                  (v.name || "").toLowerCase().includes(manualNodeSearch.trim().toLowerCase()) ||
+                                  v.nodeID.toLowerCase().includes(manualNodeSearch.trim().toLowerCase())
+                                )
+                                .slice(0, 8)
+                                .map((v) => (
+                                  <div
+                                    key={v.nodeID}
+                                    onClick={() => handleIdentifyKnownValidator(v.nodeID)}
+                                    style={{ padding: "9px 12px", fontSize: 12, borderBottom: "1px solid #222", cursor: "pointer" }}
+                                  >
+                                    <div style={{ fontWeight: v.name ? "bold" : "normal", color: v.name ? "#fff" : COLORS.TEXT_MUTE }}>
+                                      {v.name || t("anonymousValidator")}
+                                    </div>
+                                    <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: "monospace" }}>{v.nodeID.slice(0, 22)}...</div>
+                                  </div>
+                                ))}
+                              {validators.filter((v) =>
+                                (v.name || "").toLowerCase().includes(manualNodeSearch.trim().toLowerCase()) ||
+                                v.nodeID.toLowerCase().includes(manualNodeSearch.trim().toLowerCase())
+                              ).length === 0 && (
+                                <div style={{ padding: 10, fontSize: 11, color: COLORS.TEXT_MUTE, textAlign: "center" }}>{t("noValidatorFound")}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {myStakes.map((s, i) => {
+                        const name = getValidatorName(s.nodeId);
+                        const daysLeft = Math.max(0, Math.ceil((s.endTime - Date.now() / 1000) / 86400));
+                        const endDate = new Date(s.endTime * 1000);
+                        return (
+                          <div key={s.nodeId + i} style={{ background: "#141414", border: "1px solid #222", borderRadius: 10, padding: "10px 12px", marginTop: 8 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div>
+                                <div style={{ fontWeight: "bold", fontSize: 13 }}>
+                                  {name || <span style={{ fontFamily: "monospace", fontWeight: "normal", color: COLORS.TEXT_MUTE }}>{t("anonymousValidator")}</span>}
+                                </div>
+                                <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: "monospace" }}>{s.nodeId.slice(0, 14)}...</div>
+                              </div>
+                              <div style={{ textAlign: "right" }}>
+                                <div style={{ fontSize: 14, fontWeight: "900", color: STAKE_COLOR }}>{formatBalance(s.amount)} FLR</div>
+                                <div style={{ fontSize: 10, color: daysLeft <= 0 ? COLORS.PRICE_GREEN : COLORS.TEXT_MUTE }}>
+                                  {daysLeft > 0
+                                    ? (lang === "vi" ? `còn ${daysLeft} ngày` : `${daysLeft}d left`)
+                                    : (lang === "vi" ? "đã kết thúc" : "ended")}
+                                </div>
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 9, color: COLORS.TEXT_MUTE, marginTop: 6 }}>
+                              {lang === "vi" ? "Kết thúc lúc" : "Ends"}: {endDate.toLocaleDateString()} {endDate.toLocaleTimeString()}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Phần thưởng — gộp 2 loại reward vào chung 1 khối có tiêu đề, thay vì 2 hộp rời rạc */}
+                    <div style={{ marginBottom: 14 }}>
+                      <div style={{ fontSize: 11, fontWeight: "bold", color: STAKE_COLOR, marginBottom: 8 }}>
+                        {lang === "vi" ? "Phần thưởng" : "Rewards"}
+                      </div>
+
+                      {Number(claimableStakingReward) > 0 ? (
+                        <RewardClaimBox
+                          message={<><span role="img" aria-label="bell">🔔</span> {t("pendingRewardNote")}</>}
+                          amount={`${t("claim")} · ${formatBalance(claimableStakingReward)} FLR`}
+                          onClaim={handleClaimStaking}
+                          baseColor={COLORS.PRICE_GREEN}
+                          pulse
+                        />
+                      ) : (
+                        <div style={{ background: "#0a0a0a", border: "1px solid #222", borderRadius: 10, padding: "8px 12px", marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <div style={{ fontSize: 11, color: COLORS.TEXT_MUTE }}>
+                            {lang === "vi" ? "Reward staking: " : "Staking reward: "}
+                            <span style={{ fontWeight: "bold" }}>{formatBalance(claimableStakingReward)} FLR</span>
+                          </div>
+                          <button
+                            onClick={() => refreshClaimableStakingReward()}
+                            style={{ background: "transparent", border: `1px solid ${STAKE_COLOR}66`, color: STAKE_COLOR, borderRadius: 8, padding: "4px 10px", fontSize: 11, cursor: "pointer" }}
+                          >
+                            🔄
+                          </button>
+                        </div>
+                      )}
+
+                      {Number(mainWalletFtsoReward) > 0 && (
+                        <RewardClaimBox
+                          message={lang === "vi" ? "🔔 Reward từ Ủy khoán (main wallet):" : "🔔 Reward from delegation (main wallet):"}
+                          amount={`${t("claim")} · ${formatBalance(mainWalletFtsoReward)} FLR`}
+                          onClaim={handleClaimMainWalletFtsoReward}
+                          baseColor={SOLID_GOLD}
+                        />
+                      )}
+                    </div>
+
+                    {Number(pChainBalance) > 0 && (
+                      <GlowButton onClick={handleWithdrawToMain} baseColor={STAKE_COLOR} textColor="black" customStyle={{ width: "100%", padding: "10px", marginBottom: 10, fontSize: 12 }}>
+                        {t("withdrawToMain", { amt: formatBalance(pChainBalance) })}
+                      </GlowButton>
+                    )}
+
+                    <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, textAlign: "center" }}>
+                      {t("depositMoreHintPre")} <span style={{ color: STAKE_COLOR, fontWeight: "bold" }}>{t("depositMoreHintMid")}</span> {t("depositMoreHintPost")}
+                    </div>
+                  </>
+                )}
+
+                {stakingTab === "new" && (
+                  <>
+                    {/* Bước 1 — Chọn validator: đây thật sự là 1 quy trình tuần tự nên đánh số các bước cho rõ */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", background: STAKE_COLOR, color: "#000", fontSize: 12, fontWeight: "900", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>1</div>
+                      <div style={{ fontSize: 12, fontWeight: "bold" }}>{lang === "vi" ? "Chọn tối đa 2 validator" : "Choose up to 2 validators"}</div>
+                    </div>
+
+                    <div style={{ fontSize: 10, color: COLORS.AMBER, marginBottom: 10, lineHeight: 1.5, paddingLeft: 30 }}>
+                      {t("validatorMinWarningPre")} <b>{MIN_STAKE_FLR.toLocaleString()} FLR</b>, {t("validatorMinWarningMid")} <b>{MIN_STAKE_DAYS} {lang === "vi" ? "ngày" : "days"}</b>. {t("validatorMinWarningPost")}
+                    </div>
+
+                    <div style={{ paddingLeft: 30, marginBottom: 18 }}>
+                      {stakeProviders.map((v) => (
+                        <div key={v.nodeID} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #222" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <div style={{ width: 28, height: 28, borderRadius: "50%", flexShrink: 0, background: `hsl(${(v.nodeID.charCodeAt(7) * 37) % 360}, 65%, 45%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontWeight: "bold", color: "#fff" }}>
+                              {(v.name || v.nodeID.slice(7, 9)).slice(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div style={{ fontWeight: "bold", fontSize: 13 }}>
+                                {v.name || <span style={{ fontFamily: "monospace", fontWeight: "normal", color: COLORS.TEXT_MUTE }}>{t("anonymousValidator")}</span>}
+                              </div>
+                              <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: "monospace" }}>{v.nodeID.slice(0, 14)}... · {t("uptimeFeeLabel", { uptime: v.uptime.toFixed(1), fee: v.delegationFee })}</div>
+                              <div style={{ fontSize: 10, color: v.freeSpace > 0 ? COLORS.PRICE_GREEN : "#ff4444" }}>{t("freeSpaceLabel")} {Math.floor(v.freeSpace).toLocaleString()} FLR</div>
+                              {v.daysUntilEnd != null && (
+                                <div style={{ fontSize: 10, color: v.daysUntilEnd < Number(stakeDays) ? "#ff4444" : COLORS.TEXT_MUTE }}>
+                                  {t("validatorExpiresIn", { days: v.daysUntilEnd })} {v.daysUntilEnd < Number(stakeDays) && t("shorterThanChosen")}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <button onClick={() => handleRemoveStakeProvider(v.nodeID)} style={{ background: "#ff444411", border: "none", color: "#ff4444", padding: "5px 10px", borderRadius: 8, cursor: "pointer", transition: "all 0.2s" }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = "0 0 10px #ff444455"; e.currentTarget.style.background = "#ff444433"; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#ff444411"; }}>✕</button>
+                        </div>
+                      ))}
+
+                      {stakeProviders.length < 2 && (
+                        <div ref={stakeDropdownRef} style={{ position: "relative", marginTop: 12 }}>
+                          <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                            <span style={{ position: "absolute", left: 12, color: COLORS.TEXT_MUTE }}>🔍</span>
+                            <input
+                              type="text"
+                              placeholder={loadingValidators ? t("loadingValidators") : t("searchValidatorPlaceholder")}
+                              value={stakeProviderSearch}
+                              onFocus={() => setShowStakeDropdown(true)}
+                              onChange={(e) => setStakeProviderSearch(e.target.value)}
+                              style={{ ...styles.input, paddingLeft: 35, width: "100%", boxSizing: "border-box" }}
+                            />
+                          </div>
+                          {showStakeDropdown && (
+                            <div style={{ position: "absolute", top: "110%", left: 0, right: 0, background: "#181818", borderRadius: 15, border: "1px solid #333", maxHeight: 200, overflowY: "auto", zIndex: 100, boxShadow: "0 10px 20px rgba(0,0,0,0.5)" }}>
+                              {filteredStakeProviders.filter((v) => !stakeProviders.find((sp) => sp.nodeID === v.nodeID)).map((v) => (
+                                <div key={v.nodeID} onClick={() => handleSelectStakeProvider(v)} style={{ padding: "10px 12px", fontSize: 13, borderBottom: "1px solid #222", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                  <div>
+                                    <div style={{ fontWeight: v.name ? "bold" : "normal", color: v.name ? "#fff" : COLORS.TEXT_MUTE }}>{v.name || t("anonymousValidator")}</div>
+                                    <div style={{ fontSize: 10, color: COLORS.TEXT_MUTE, fontFamily: "monospace" }}>{v.nodeID.slice(0, 20)}...</div>
+                                  </div>
+                                  <span style={{ color: COLORS.TEXT_MUTE, fontSize: 11, whiteSpace: "nowrap", marginLeft: 8, textAlign: "right" }}>
+                                    {t("uptimeFeeShort", { uptime: v.uptime.toFixed(1), fee: v.delegationFee })}<br />
+                                    {v.daysUntilEnd != null && <span>{t("expiresShort", { days: v.daysUntilEnd })}<br /></span>}
+                                    <span style={{ color: v.freeSpace > 0 ? COLORS.PRICE_GREEN : "#ff4444" }}>{t("freeSpaceShort")} {Math.floor(v.freeSpace).toLocaleString()} FLR</span>
+                                  </span>
+                                </div>
+                              ))}
+                              {!loadingValidators && filteredStakeProviders.length === 0 && (
+                                <div style={{ padding: 12, fontSize: 12, color: COLORS.TEXT_MUTE, textAlign: "center" }}>{t("noValidatorFound")}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Bước 2 — Số lượng & thời hạn */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", background: STAKE_COLOR, color: "#000", fontSize: 12, fontWeight: "900", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>2</div>
+                      <div style={{ fontSize: 12, fontWeight: "bold" }}>{lang === "vi" ? "Số lượng & thời hạn" : "Amount & duration"}</div>
+                    </div>
+
+                    <div style={{ paddingLeft: 30, marginBottom: 18 }}>
+                      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                        <input type="number" value={stakeAmount} onChange={(e) => setStakeAmount(e.target.value)} style={styles.input} placeholder={t("stakingAmountPlaceholder")} />
+                        <GlowButton onClick={() => setStakeAmount(String(Math.floor(Number(pChainBalance))))} baseColor={STAKE_COLOR}>{t("max")}</GlowButton>
+                      </div>
+                      {Number(stakeAmount) > 0 && !stakeAmountValid && (
+                        <div style={{ fontSize: 10, color: "#ff4444", textAlign: "center", marginBottom: 8 }}>
+                          {lang === "vi"
+                            ? `Cần tối thiểu ${requiredStakeMin.toLocaleString()} FLR (${MIN_STAKE_FLR.toLocaleString()} FLR × ${Math.max(stakeProviders.length, 1)} validator đã chọn)`
+                            : `Requires at least ${requiredStakeMin.toLocaleString()} FLR (${MIN_STAKE_FLR.toLocaleString()} FLR × ${Math.max(stakeProviders.length, 1)} selected validator(s))`}
+                        </div>
+                      )}
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 11, color: COLORS.TEXT_MUTE, whiteSpace: "nowrap" }}>{t("durationLabel")}</span>
+                        <input type="number" min={MIN_STAKE_DAYS} value={stakeDays} onChange={(e) => setStakeDays(e.target.value)} style={{ ...styles.input, flex: 1 }} placeholder={t("minDaysPlaceholder", { days: MIN_STAKE_DAYS })} />
+                      </div>
+                    </div>
+
+                    {/* Bước 3 — Xác nhận */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", background: STAKE_COLOR, color: "#000", fontSize: 12, fontWeight: "900", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>3</div>
+                      <div style={{ fontSize: 12, fontWeight: "bold" }}>{lang === "vi" ? "Xác nhận" : "Confirm"}</div>
+                    </div>
+                    <div style={{ paddingLeft: 30 }}>
+                      <GlowButton
+                        onClick={handleStakeFLR}
+                        disabled={stakeProviders.length === 0 || !stakeAmountValid}
+                        baseColor={stakeProviders.length === 0 || !stakeAmountValid ? "transparent" : STAKE_COLOR}
+                        textColor={stakeProviders.length === 0 || !stakeAmountValid ? COLORS.TEXT_MUTE : "black"}
+                        customStyle={{ width: "100%", padding: "15px", border: stakeProviders.length === 0 || !stakeAmountValid ? `1px solid ${COLORS.BORDER}` : "none" }}
+                      >
+                        {t("stakeButton")}
+                      </GlowButton>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </section>
 
           <section style={{ ...styles.card, border: `2px solid ${SOLID_GOLD}44` }}>
-            <div style={{ ...styles.label, ...goldTextStyle }}>DELEGATION ACCOUNT (PDA)</div>
+            <div style={{ ...styles.label, ...goldTextStyle }}>{t("pdaTitle")}</div>
             {pdaAddress && (
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#0a0a0a', padding: '8px 12px', borderRadius: '10px', fontSize: '10px', fontFamily: 'monospace', cursor: 'pointer', border: '1px solid #222', marginTop: '-6px', marginBottom: '15px' }} onClick={() => handleCopy(pdaAddress)} title="Click to copy">
-                <span style={{ opacity: 0.7, color: SOLID_GOLD }}>Address:</span><span style={{ fontWeight: 'bold', ...goldTextStyle }}>{pdaAddress.slice(0, 10)}...{pdaAddress.slice(-8)} 📋</span>
+              <div
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "#0a0a0a", padding: "8px 12px", borderRadius: "10px", fontSize: "10px", fontFamily: "monospace", cursor: "pointer", border: "1px solid #222", marginTop: "-6px", marginBottom: "15px" }}
+                onClick={() => handleCopy(pdaAddress)}
+                title="Click to copy"
+              >
+                <span style={{ opacity: 0.7, color: SOLID_GOLD }}>{t("addressLabel")}</span><span style={{ fontWeight: "bold", ...goldTextStyle }}>{pdaAddress.slice(0, 10)}...{pdaAddress.slice(-8)} 📋</span>
               </div>
             )}
             {!isActivated ? (
-              <div style={{ textAlign: 'center', padding: '10px 0' }}>
-                <p style={{ fontSize: '12px', marginBottom: '15px', lineHeight: '1.5', ...goldTextStyle }}>Tài khoản PDA của bạn chưa được khởi tạo.<br />Vui lòng kích hoạt để bắt đầu.</p>
-                <GlowButton onClick={handleEnablePDA} baseColor={SOLID_GOLD} textColor="black" customStyle={{ width: '100%', fontSize: '13px', padding: '15px' }}>⚡ KÍCH HOẠT PDA NGAY</GlowButton>
+              <div style={{ textAlign: "center", padding: "10px 0" }}>
+                <p style={{ fontSize: "12px", marginBottom: "15px", lineHeight: "1.5", ...goldTextStyle }}>{t("pdaNotActivatedText")}<br />{t("pdaNotActivatedSubtext")}</p>
+                <GlowButton onClick={handleEnablePDA} baseColor={SOLID_GOLD} textColor="black" customStyle={{ width: "100%", fontSize: "13px", padding: "15px" }}>{t("pdaActivateNow")}</GlowButton>
               </div>
             ) : (
               <>
                 <div style={{ marginBottom: 15 }}>
-                  <div style={{ fontSize: 24, fontWeight: '900', color: COLORS.PRICE_GREEN }}>
-                    {formatBalance(balances.pdaWflr)} <small style={{ ...goldTextStyle, fontSize: 18 }}> WFLR</small>
-                  </div>
+                  <div style={{ fontSize: 24, fontWeight: "900", color: COLORS.PRICE_GREEN }}>{formatBalance(balances.pdaWflr)} <small style={{ ...goldTextStyle, fontSize: 18 }}> WFLR</small></div>
                   <div style={{ fontSize: 12, color: COLORS.TEXT_MUTE }}>{toUSD(balances.pdaWflr)}</div>
                 </div>
-                <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                  <input type="number" value={pdaAmount} onChange={(e) => setPdaAmount(e.target.value)} style={styles.input} placeholder="Số lượng rút..." />
+                <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                  <input type="number" value={pdaAmount} onChange={(e) => setPdaAmount(e.target.value)} style={styles.input} placeholder={t("withdrawAmount")} />
                   <button
                     onClick={() => setPdaAmount(balances.pdaWflr)}
-                    style={{
-                      ...styles.btnBase,
-                      background: goldGradientBg,
-                      color: '#000',
-                      fontWeight: 'bold',
-                      border: `1px solid ${SOLID_GOLD}`,
-                      padding: '0 16px'
-                    }}
+                    style={{ ...styles.btnBase, background: goldGradientBg, color: "#000", fontWeight: "bold", border: `1px solid ${SOLID_GOLD}`, padding: "0 16px" }}
                     onMouseOver={(e) => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = SOLID_GOLD; e.currentTarget.style.boxShadow = `0 0 10px ${SOLID_GOLD}88`; }}
                     onMouseOut={(e) => { e.currentTarget.style.background = goldGradientBg; e.currentTarget.style.color = "#000"; e.currentTarget.style.boxShadow = "none"; }}
                   >
-                    MAX
+                    {t("max")}
                   </button>
                 </div>
                 <button
                   onClick={handleWithdrawPDA}
                   disabled={!pdaAmountValid}
-                  style={{ ...styles.btnBase, width: '100%', background: goldGradientBg, color: '#000', fontWeight: 'bold', border: `3px solid ${SOLID_GOLD}66`, marginBottom: 20, ...(!pdaAmountValid ? { opacity: 0.5, cursor: 'not-allowed' } : {}) }}
+                  style={{ ...styles.btnBase, width: "100%", background: goldGradientBg, color: "#000", fontWeight: "bold", border: `3px solid ${SOLID_GOLD}66`, marginBottom: 20, ...(!pdaAmountValid ? { opacity: 0.5, cursor: "not-allowed" } : {}) }}
                   onMouseOver={(e) => { if (!pdaAmountValid) return; e.currentTarget.style.background = "transparent"; e.currentTarget.style.borderColor = SOLID_GOLD; e.currentTarget.style.color = SOLID_GOLD; e.currentTarget.style.boxShadow = `0 0 15px ${SOLID_GOLD}88`; }}
                   onMouseOut={(e) => { if (!pdaAmountValid) return; e.currentTarget.style.background = goldGradientBg; e.currentTarget.style.borderColor = `${SOLID_GOLD}66`; e.currentTarget.style.color = "#000"; e.currentTarget.style.boxShadow = "none"; }}
-                >⤺ RÚT FLR VỀ MAIN WALLET</button>
+                >
+                  {t("withdrawToMainWallet")}
+                </button>
 
-                <div style={{ background: 'rgba(0,0,0,0.5)', padding: '16px', borderRadius: '20px', border: `1px solid ${timeLeft > 0 ? COLORS.BORDER : COLORS.PINK + '44'}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ background: "rgba(0,0,0,0.5)", padding: "16px", borderRadius: "20px", border: `1px solid ${timeLeft > 0 ? COLORS.BORDER : COLORS.PINK + "44"}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div>
-                      <div style={{ fontSize: '10px', fontWeight: '800', marginBottom: '4px', ...(timeLeft > 0 ? { color: COLORS.TEXT_MUTE } : goldTextStyle) }}>
-                        {timeLeft > 0 ? "NEXT REWARD CYCLE" : "UNCLAIMED REWARDS"}
+                      <div style={{ fontSize: "10px", fontWeight: "800", marginBottom: "4px", ...(timeLeft > 0 ? { color: COLORS.TEXT_MUTE } : goldTextStyle) }}>
+                        {timeLeft > 0 ? t("nextRewardCycle") : t("unclaimedRewards")}
                       </div>
-                      <div style={{ fontSize: '20px', fontWeight: '900' }}>
+                      <div style={{ fontSize: "20px", fontWeight: "900" }}>
                         {timeLeft > 0 ? renderCountdown(timeLeft) : <span style={{ color: COLORS.PRICE_GREEN }}>+{Number(balances.reward).toFixed(2)} FLR</span>}
                       </div>
                     </div>
@@ -1446,19 +2122,14 @@ export default function FlarePortal() {
                       onClick={handleClaim}
                       disabled={Number(balances.reward) <= 0 || timeLeft > 0}
                       baseColor={timeLeft > 0 ? "transparent" : SOLID_GOLD}
-                      textColor={timeLeft > 0 ? COLORS.TEXT_MUTE : 'black'}
-                      customStyle={{ minWidth: '85px', border: timeLeft > 0 ? `1px solid ${COLORS.BORDER}` : 'none' }}
+                      textColor={timeLeft > 0 ? COLORS.TEXT_MUTE : "black"}
+                      customStyle={{ minWidth: "85px", border: timeLeft > 0 ? `1px solid ${COLORS.BORDER}` : "none" }}
                     >
-                      {timeLeft > 0 ? "LOCKED" : "CLAIM"}
+                      {timeLeft > 0 ? t("locked") : t("claim")}
                     </GlowButton>
                   </div>
-                  <div style={{ width: '100%', height: '4px', background: '#222', borderRadius: '10px', marginTop: '12px', overflow: 'hidden' }}>
-                    <div style={{
-                      width: `${Math.max(0, 100 - (timeLeft / CYCLE_SECONDS * 100))}%`,
-                      height: '100%',
-                      background: timeLeft > 0 ? COLORS.PINK : COLORS.PRICE_GREEN,
-                      transition: 'width 1s linear'
-                    }} />
+                  <div style={{ width: "100%", height: "4px", background: "#222", borderRadius: "10px", marginTop: "12px", overflow: "hidden" }}>
+                    <div style={{ width: `${Math.max(0, 100 - (timeLeft / CYCLE_SECONDS) * 100)}%`, height: "100%", background: timeLeft > 0 ? COLORS.PINK : COLORS.PRICE_GREEN, transition: "width 1s linear" }} />
                   </div>
                 </div>
               </>
@@ -1466,120 +2137,76 @@ export default function FlarePortal() {
           </section>
 
           <section style={{ ...styles.card, border: `2px solid ${COLORS.PINK}44` }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-              <div style={{ ...styles.label, marginBottom: 0 }}>Delegations ({delegations.length}/2)</div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+              <div style={{ ...styles.label, marginBottom: 0 }}>{t("delegationsTitle", { n: delegations.length })}</div>
               {delegations.length > 0 && (
-                <button onClick={handleUndelegateAll} style={{ ...styles.undelegateBtn, transition: "all 0.2s" }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}66`; e.currentTarget.style.background = `${COLORS.PINK}22`; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "transparent"; }}>UNDELEGATE ALL</button>
+                <button onClick={handleUndelegateAll} style={{ ...styles.undelegateBtn, transition: "all 0.2s" }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = `0 0 10px ${COLORS.PINK}66`; e.currentTarget.style.background = `${COLORS.PINK}22`; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "transparent"; }}>{t("undelegateAll")}</button>
               )}
             </div>
 
             {delegations.map((d, i) => (
-              <div key={d.addr || i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderBottom: i === delegations.length - 1 ? 'none' : '1px solid #222' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{
-                    width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
-                    background: `hsl(${(d.name.charCodeAt(0) * 37) % 360}, 65%, 45%)`,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    fontSize: 13, fontWeight: 'bold', color: '#fff'
-                  }}>
+              <div key={d.addr || i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 0", borderBottom: i === delegations.length - 1 ? "none" : "1px solid #222" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{ width: 32, height: 32, borderRadius: "50%", flexShrink: 0, background: `hsl(${(d.name.charCodeAt(0) * 37) % 360}, 65%, 45%)`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: "bold", color: "#fff" }}>
                     {d.name.slice(0, 2).toUpperCase()}
                   </div>
-                  <div><div style={{ fontWeight: 'bold' }}>{d.name}</div><div style={{ fontSize: 11, color: COLORS.PINK }}>{d.pct}% Power</div></div>
+                  <div><div style={{ fontWeight: "bold" }}>{d.name}</div><div style={{ fontSize: 11, color: COLORS.PINK }}>{d.pct}% {t("power")}</div></div>
                 </div>
-                <button onClick={() => handleDelegate(d.addr, 0)} style={{ background: '#ff444411', border: 'none', color: '#ff4444', padding: '5px 10px', borderRadius: 8, cursor: 'pointer', transition: 'all 0.2s' }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = "0 0 10px #ff444455"; e.currentTarget.style.background = "#ff444433"; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#ff444411"; }}>✕</button>
+                <button onClick={() => handleDelegate(d.addr, 0)} style={{ background: "#ff444411", border: "none", color: "#ff4444", padding: "5px 10px", borderRadius: 8, cursor: "pointer", transition: "all 0.2s" }} onMouseOver={(e) => { e.currentTarget.style.boxShadow = "0 0 10px #ff444455"; e.currentTarget.style.background = "#ff444433"; }} onMouseOut={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.background = "#ff444411"; }}>✕</button>
               </div>
             ))}
 
             {delegations.length < 2 && (
-              <div ref={dropdownRef} style={{ position: 'relative', marginTop: 12 }}>
-                <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
-                  <span style={{ position: 'absolute', left: 12, color: COLORS.TEXT_MUTE }}>🔍</span>
-                  <input type="text" placeholder="Tìm Provider..." value={providerSearch} onFocus={() => setShowDropdown(true)} onChange={(e) => setProviderSearch(e.target.value)} style={{ ...styles.input, paddingLeft: 35, width: '100%', boxSizing: 'border-box' }} />
+              <div ref={dropdownRef} style={{ position: "relative", marginTop: 12 }}>
+                <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                  <span style={{ position: "absolute", left: 12, color: COLORS.TEXT_MUTE }}>🔍</span>
+                  <input type="text" placeholder={t("searchProvider")} value={providerSearch} onFocus={() => setShowDropdown(true)} onChange={(e) => setProviderSearch(e.target.value)} style={{ ...styles.input, paddingLeft: 35, width: "100%", boxSizing: "border-box" }} />
                 </div>
                 {showDropdown && (
-                  <div style={{ position: 'absolute', bottom: '110%', left: 0, right: 0, background: '#181818', borderRadius: 15, border: '1px solid #333', maxHeight: 150, overflowY: 'auto', zIndex: 100, boxShadow: '0 -10px 20px rgba(0,0,0,0.5)' }}>
-                    {filteredProviders.map(p => (
-                      <div key={p.address} onClick={() => { setPendingProvider(p); setProviderSearch(p.name); setShowDropdown(false); }} style={{ padding: 12, fontSize: 13, borderBottom: '1px solid #222', cursor: 'pointer' }}>{p.name} <span style={{ color: COLORS.PINK, float: 'right' }}>50%</span></div>
+                  <div style={{ position: "absolute", bottom: "110%", left: 0, right: 0, background: "#181818", borderRadius: 15, border: "1px solid #333", maxHeight: 150, overflowY: "auto", zIndex: 100, boxShadow: "0 -10px 20px rgba(0,0,0,0.5)" }}>
+                    {filteredProviders.map((p) => (
+                      <div key={p.address} onClick={() => { setPendingProvider(p); setProviderSearch(p.name); setShowDropdown(false); }} style={{ padding: 12, fontSize: 13, borderBottom: "1px solid #222", cursor: "pointer" }}>
+                        {p.name} <span style={{ color: COLORS.PINK, float: "right" }}>50%</span>
+                      </div>
                     ))}
                   </div>
                 )}
                 {pendingProvider && (
-                  <div style={{ marginTop: 12, padding: 12, background: 'rgba(227, 24, 100, 0.1)', borderRadius: 16, border: `1px dashed ${COLORS.PINK}`, textAlign: 'center' }}>
-                    <div style={{ fontSize: 12, marginBottom: 8 }}>Ủy quyền cho <b>{pendingProvider.name}</b>?</div>
-                    <GlowButton onClick={() => handleDelegate(pendingProvider.address, 50)} baseColor={COLORS.PINK} customStyle={{ width: '100%', padding: '10px' }}>KÝ XÁC NHẬN (50%)</GlowButton>
-                    <div onClick={() => { setPendingProvider(null); setProviderSearch(""); }} style={{ fontSize: 10, marginTop: 8, color: COLORS.TEXT_MUTE, cursor: 'pointer', textDecoration: 'underline' }}>Hủy chọn</div>
+                  <div style={{ marginTop: 12, padding: 12, background: "rgba(227, 24, 100, 0.1)", borderRadius: 16, border: `1px dashed ${COLORS.PINK}`, textAlign: "center" }}>
+                    <div style={{ fontSize: 12, marginBottom: 8 }}>{t("confirmDelegateQuestionPre")} <b>{pendingProvider.name}</b>{t("confirmDelegateQuestionPost")}</div>
+                    <GlowButton onClick={() => handleDelegate(pendingProvider.address, 50)} baseColor={COLORS.PINK} customStyle={{ width: "100%", padding: "10px" }}>{t("signConfirm50")}</GlowButton>
+                    <div onClick={() => { setPendingProvider(null); setProviderSearch(""); }} style={{ fontSize: 10, marginTop: 8, color: COLORS.TEXT_MUTE, cursor: "pointer", textDecoration: "underline" }}>{t("cancelSelection")}</div>
                   </div>
                 )}
               </div>
             )}
           </section>
 
-          <div style={{ textAlign: 'center', fontSize: 11, color: COLORS.PINK, fontWeight: 'bold' }}>● {status.toUpperCase()}</div>
+          <div style={{ textAlign: "center", fontSize: 11, color: COLORS.PINK, fontWeight: "bold" }}>● {status.toUpperCase()}</div>
         </>
       )}
 
       {status.includes("⏳") && (
         <div
-          onClick={() => setStatus("Sẵn sàng")}
-          style={{
-            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(8, 8, 8, 0.95)', backdropFilter: 'blur(12px)',
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            zIndex: 9999, padding: '20px', textAlign: 'center',
-            cursor: 'pointer',
-            overflow: 'hidden'
-          }}
+          onClick={() => setStatus(t("statusReady"))}
+          style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(8, 8, 8, 0.95)", backdropFilter: "blur(12px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 9999, padding: "20px", textAlign: "center", cursor: "pointer", overflow: "hidden" }}
         >
-          {/* --- QUỐC HUY LÀM NỀN MÀN HÌNH CHỜ (mờ, phía sau nội dung) --- */}
-          <div
-            style={{
-              position: 'absolute', inset: 0,
-              backgroundImage: `url(${quocHuyImg})`,
-              backgroundSize: 'min(60vw, 420px)',
-              backgroundPosition: 'center',
-              backgroundRepeat: 'no-repeat',
-              opacity: 0.12,
-              filter: 'grayscale(15%)',
-              pointerEvents: 'none',
-              zIndex: 0
-            }}
-          />
+          <div style={{ position: "absolute", inset: 0, backgroundImage: `url(${quocHuyImg})`, backgroundSize: "min(60vw, 420px)", backgroundPosition: "center", backgroundRepeat: "no-repeat", opacity: 0.12, filter: "grayscale(15%)", pointerEvents: "none", zIndex: 0 }} />
 
-          <div style={{
-            position: 'relative', zIndex: 1,
-            fontSize: '70px',
-            animation: 'bounce 0.5s infinite alternate cubic-bezier(0.5, 0.05, 1, 0.5)',
-            textShadow: `0 20px 30px ${COLORS.PINK}66`
-          }}>
+          <div style={{ position: "relative", zIndex: 1, fontSize: "70px", animation: "bounce 0.5s infinite alternate cubic-bezier(0.5, 0.05, 1, 0.5)", textShadow: `0 20px 30px ${COLORS.PINK}66` }}>
             {["🤪", "🐢", "🚀", "🐩", "🏊‍♂️"][quoteIndex]}
           </div>
 
-          <div style={{
-            position: 'relative', zIndex: 1,
-            marginTop: '35px', color: COLORS.AMBER, fontSize: '15px',
-            fontWeight: 'bold', lineHeight: '1.5', maxWidth: '300px'
-          }}>
-            {[
-              "Chỉ cần bạn yêu chính mình, thế giới sẽ dần yêu lấy bạn... 🍜",
-              "Không nhất thiết phải trở nên hoàn hảo, chỉ cần hôm nay tiến bộ hơn ngày hôm qua là đủ... 🏎️",
-              "Hạnh phúc không phải là điểm đến, mà là một chuyến đi. Hãy tận hưởng từng khoảnh khắc 🐩...",
-              "Smart contract đang khởi động, vui lòng không hối thúc 🐢",
-              "Dữ liệu đang bơi từ máy chủ về, ráng quạt tay xíu là tới liền! 🏊‍♂️💦"
-            ][quoteIndex]}
+          <div style={{ position: "relative", zIndex: 1, marginTop: "35px", color: COLORS.AMBER, fontSize: "15px", fontWeight: "bold", lineHeight: "1.5", maxWidth: "300px" }}>
+            {loadingQuotes[quoteIndex]}
           </div>
 
-          <div style={{
-            position: 'relative', zIndex: 1,
-            marginTop: '25px', padding: '8px 16px', background: '#111',
-            borderRadius: '20px', border: `1px dashed ${COLORS.PINK}`,
-            fontSize: '11px', color: COLORS.PRICE_GREEN, animation: 'pulseGlow 1.5s infinite',
-            textTransform: 'uppercase', letterSpacing: '1px'
-          }}>
+          <div style={{ position: "relative", zIndex: 1, marginTop: "25px", padding: "8px 16px", background: "#111", borderRadius: "20px", border: `1px dashed ${COLORS.PINK}`, fontSize: "11px", color: COLORS.PRICE_GREEN, animation: "pulseGlow 1.5s infinite", textTransform: "uppercase", letterSpacing: "1px" }}>
             {status}
           </div>
 
-          <div style={{ position: 'relative', zIndex: 1, marginTop: '40px', fontSize: '12px', color: COLORS.TEXT_MUTE, opacity: 0.7 }}>
-            💡 Click bất kỳ đâu để bỏ qua màn hình chờ (Nếu ví hoặc RPC bị treo)
+          <div style={{ position: "relative", zIndex: 1, marginTop: "40px", fontSize: "12px", color: COLORS.TEXT_MUTE, opacity: 0.7 }}>
+            {t("overlayHint")}
           </div>
         </div>
       )}
