@@ -18,10 +18,17 @@ import { useLanguage } from "./i18n";
 
 const FLR_NETWORK = Network.FLARE;
 // C-Chain dùng "/ext/C/rpc", P-Chain dùng "/ext/bc/P" — hai endpoint khác định dạng, không suy ra lẫn nhau
-
-// Danh sách RPC P-Chain (thử lần lượt). "flare-api.flare.network" là node chính thức, miễn phí, không cần
-// API key cho các API platform.* (getStake, getCurrentValidators...). Nếu có node dự phòng riêng, chỉ cần
-// thêm URL vào mảng — fetchPChainRPC() sẽ tự thử lần lượt.
+// ============================================================================
+// FIX #4 — Danh sách RPC dự phòng cho P-Chain (đã tra cứu). "flare-api.flare.network" là node
+// CHÍNH THỨC DUY NHẤT của Flare Foundation public miễn phí, không cần API key, cho các API
+// platform.* (getStake, getCurrentValidators...). Các provider RPC khác (Ankr, QuickNode, dRPC...)
+// có hỗ trợ P-Chain nhưng đều yêu cầu tài khoản/API key riêng, nên KHÔNG thể nhét thẳng một URL công
+// khai vào đây làm fallback hoàn chỉnh. Nếu sau này có node dự phòng riêng (self-host, hoặc RPC trả
+// phí kèm key), chỉ cần thêm URL vào mảng bên dưới — fetchPChainRPC() sẽ tự thử lần lượt.
+// Trong lúc chưa có endpoint dự phòng, mảng chỉ có 1 phần tử nhưng vẫn có lợi: mọi lệnh gọi P-Chain
+// giờ đi qua CÙNG một hàm có retry (kể cả lỗi 503, không chỉ 429 như trước), thay vì có chỗ retry
+// có chỗ không như bản cũ.
+// ============================================================================
 const P_CHAIN_RPC_URLS = [
   "https://flare-api.flare.network/ext/bc/P"
   // "https://<endpoint-du-phong-cua-ban>/ext/bc/P", // thêm vào đây nếu có node dự phòng
@@ -35,20 +42,6 @@ const VALIDATOR_NAMES_URL = "https://raw.githubusercontent.com/flare-foundation/
 
 const USDT0_ADDRESS = "0xe7cd86e13AC4309349F30B3435a9d337750fC82D";
 const USDT_ADDRESS = "0x0B38e83B86d491735fEaa0a791F65c2B99535396";
-
-// FlareCat (FCAT) trên Flare — địa chỉ token lấy từ trang chính thức flarecat.xyz
-const FCAT_ADDRESS = "0xbF6d832350c5FB787d3822841dC930C5ebdbb888";
-const FCAT_COLOR = "#FF8A3D";
-
-// Tin tức sống cho thanh ticker: chỉ lấy tiêu đề + nguồn + link (không sao chép nội dung bài báo).
-// Kiểm tra lại URL RSS còn sống trước khi dùng thật.
-const NEWS_FEEDS = [
-  { source: "Cointelegraph", url: "https://cointelegraph.com/rss" },
-  { source: "CoinDesk", url: "https://www.coindesk.com/arc/outboundfeeds/rss/" }
-];
-// Chỉ giữ tin liên quan hệ sinh thái Flare. Muốn nhiều tin hơn có thể thêm "xrp" (sẽ nhiễu hơn).
-const NEWS_KEYWORDS = ["flare", "flr", "fxrp", "ftso"];
-const NEWS_REFRESH_MS = 5 * 60_000;
 
 const goldGradientBg = "linear-gradient(to bottom, #8A641C 0%, #F4D573 25%, #9A761C 50%, #FFF1A0 75%, #7B5611 100%)";
 const goldTextStyle = {
@@ -154,13 +147,6 @@ const formatCurrentTime = (date) => {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())} ${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()}`;
 };
 
-// FCAT có giá rất nhỏ (~0.0003): giữ 4 chữ số có nghĩa thay vì in số thô
-const formatTinyPrice = (n) => {
-  if (!n) return "0";
-  if (n >= 1) return n.toLocaleString(undefined, { maximumFractionDigits: 4 });
-  return n.toLocaleString(undefined, { maximumSignificantDigits: 4, maximumFractionDigits: 12 });
-};
-
 // ============================================================================
 // SHARED UI COMPONENTS
 // ============================================================================
@@ -247,9 +233,6 @@ const useCryptoPrices = () => {
   // Flash màu xanh/đỏ trên Price Tag của FLR mỗi khi giá vừa cập nhật đổi khác lần poll trước
   const [flrFlash, setFlrFlash] = useState(null); // 'up' | 'down' | null
   const prevFlrRef = useRef(null);
-  const flashTimerRef = useRef(null);
-  // Giá FCAT lấy riêng từ DexScreener theo địa chỉ token (CoinGecko không có sẵn cho token này)
-  const [fcat, setFcat] = useState({ price: 0, change24h: 0 });
 
   useEffect(() => {
     let cancelled = false;
@@ -263,8 +246,7 @@ const useCryptoPrices = () => {
         const newFlr = data["flare-networks"]?.usd || 0;
         if (prevFlrRef.current != null && newFlr !== prevFlrRef.current) {
           setFlrFlash(newFlr > prevFlrRef.current ? "up" : "down");
-          clearTimeout(flashTimerRef.current);
-          flashTimerRef.current = setTimeout(() => setFlrFlash(null), 1200);
+          setTimeout(() => setFlrFlash(null), 1200);
         }
         prevFlrRef.current = newFlr;
 
@@ -285,76 +267,9 @@ const useCryptoPrices = () => {
     };
     getAllPrices();
     const interval = setInterval(getAllPrices, 60_000);
-    return () => { cancelled = true; clearInterval(interval); clearTimeout(flashTimerRef.current); };
-  }, []);
-
-  // Effect riêng cho FCAT: nếu DexScreener lỗi thì giá các coin khác không bị ảnh hưởng
-  useEffect(() => {
-    let cancelled = false;
-    const getFcat = async () => {
-      try {
-        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${FCAT_ADDRESS}`);
-        const data = await res.json();
-        if (cancelled) return;
-        // Chỉ lấy pool trên Flare mà FCAT là base token, chọn pool thanh khoản cao nhất
-        const best = (data?.pairs || [])
-          .filter((p) => p.chainId === "flare" && p.baseToken?.address?.toLowerCase() === FCAT_ADDRESS.toLowerCase())
-          .sort((a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0))[0];
-        if (best) setFcat({ price: Number(best.priceUsd) || 0, change24h: Number(best.priceChange?.h24) || 0 });
-      } catch (e) {
-        console.error("Lỗi lấy giá FCAT:", e);
-      }
-    };
-    getFcat();
-    const interval = setInterval(getFcat, 60_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
-
-  return { prices, flrFlash, fcat };
-};
-
-// Tin tức sống từ RSS (qua rss2json để tránh CORS). Mỗi feed lỗi riêng lẻ không làm hỏng các feed còn lại.
-// Khi chạy thật nên thay bằng endpoint serverless của riêng bạn (ổn định, không lệ thuộc bên thứ ba).
-const useLiveNews = (max = 2) => {
-  const [news, setNews] = useState([]); // [{ title, link, source, time }]
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const results = await Promise.all(
-          NEWS_FEEDS.map(async (f) => {
-            try {
-              const res = await fetch(`https://api.rss2json.com/v1/api.json?rss_url=${encodeURIComponent(f.url)}`);
-              const data = await res.json();
-              return (data?.items || []).map((i) => ({
-                title: String(i.title || "").trim(),
-                link: i.link,
-                source: f.source,
-                time: new Date(i.pubDate).getTime() || 0
-              }));
-            } catch {
-              return [];
-            }
-          })
-        );
-        const filtered = results
-          .flat()
-          .filter((n) => n.title && /^https?:\/\//.test(n.link || "") && NEWS_KEYWORDS.some((k) => n.title.toLowerCase().includes(k)))
-          .sort((a, b) => b.time - a.time)
-          .slice(0, max);
-        // Chỉ ghi đè khi có kết quả, nếu không thì giữ tin cũ / tin dự phòng
-        if (!cancelled && filtered.length > 0) setNews(filtered);
-      } catch (e) {
-        console.error("Lỗi lấy tin tức:", e);
-      }
-    };
-    load();
-    const interval = setInterval(load, NEWS_REFRESH_MS);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, [max]);
-
-  return news;
+  return { prices, flrFlash };
 };
 
 // ============================================================================
@@ -422,8 +337,7 @@ export default function FlarePortal() {
   const stakeDropdownRef = useRef(null);
   const rewardRef = useRef(balances.reward);
 
-  const { prices, flrFlash, fcat } = useCryptoPrices();
-  const liveNews = useLiveNews(2);
+  const { prices, flrFlash } = useCryptoPrices();
   const loadingQuotes = tList("quotes");
 
   const toUSD = useCallback(
@@ -435,9 +349,15 @@ export default function FlarePortal() {
     []
   );
 
-  // Provider được memo hóa: chỉ tạo mới khi walletType/customEthersProvider thực sự đổi. Nếu tạo
-  // BrowserProvider mới mỗi lần render (đồng hồ re-render mỗi giây), mỗi cái sẽ gắn thêm listener vào
-  // window.ethereum mà không bao giờ được gỡ -> MaxListenersExceededWarning.
+  // ============================================================================
+  // FIX #1 — Provider được memo hóa thật sự (useMemo), không tạo lại mỗi lần render.
+  // Trước đây getProvider() tạo `new ethers.BrowserProvider(window.ethereum)` MỚI mỗi lần gọi,
+  // và vì đồng hồ currentTime re-render mỗi giây + <SwapModal provider={getProvider()}/> gọi nó
+  // ngay trong JSX, nên cứ mỗi giây lại có 1 BrowserProvider mới được tạo ra, mỗi cái tự gắn thêm
+  // listener vào window.ethereum mà không bao giờ được gỡ -> gây ra MaxListenersExceededWarning
+  // và làm "ngộp" kênh giao tiếp nội bộ của ví (ObjectMultiplex - orphaned data).
+  // Nay: chỉ tạo provider mới khi walletType/customEthersProvider thực sự đổi.
+  // ============================================================================
   const provider = useMemo(() => {
     if (walletType === "metamask" && window.ethereum) return new ethers.BrowserProvider(window.ethereum);
     if (walletType === "walletconnect" && customEthersProvider) return customEthersProvider;
@@ -464,8 +384,7 @@ export default function FlarePortal() {
 
   // --- Reward staking đang chờ claim + FTSO reward sinh ra từ stake (2 pool khác nhau, xem ghi chú ở state) ---
   const refreshClaimableStakingReward = useCallback(async (publicKeyOverride) => {
-    // Lưu ý: khi dùng làm callback của setInterval, tham số đầu có thể là undefined -> dùng state
-    const publicKey = typeof publicKeyOverride === "string" ? publicKeyOverride : pChainPublicKey;
+    const publicKey = publicKeyOverride || pChainPublicKey;
     if (!publicKey) return;
     try {
       const cAddress = FLR_NETWORK.getCAddress(publicKey);
@@ -493,24 +412,36 @@ export default function FlarePortal() {
     }
   }, [pChainPublicKey, getProvider]);
 
-  // Cache danh sách nodeID mà ví này từng stake, để lần sau chỉ cần tra đúng các validator đó.
+  // Cache danh sách nodeID mà ví này từng stake (không còn là điều kiện bắt buộc để dò nhanh — xem
+  // FIX #5 ở refreshMyStakes — chỉ giữ lại phòng khi cần tối ưu thêm sau này).
   const stakeNodeCacheKey = useCallback((pAddr) => `flareportal_stake_nodes_${pAddr}`, []);
 
-  // RPC công khai của Flare hay trả 429/503 khi bị gọi dồn dập; trình duyệt thường hiển thị nhầm thành
-  // "CORS blocked" vì response lỗi không kèm header CORS. Hàm này thử lại vài lần, mỗi lần chờ lâu hơn.
+  // RPC công khai của Flare hay trả 429 (Too Many Requests) khi bị gọi dồn dập; lỗi này trình duyệt
+  // thường hiển thị nhầm thành "CORS blocked" vì response 429 không kèm header CORS.
+  // Hàm này thử lại vài lần, mỗi lần chờ lâu hơn, trước khi thật sự báo lỗi.
   const withRetry429 = useCallback(async (fn, retries = 3, delayMs = 1500) => {
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
         return await fn();
       } catch (e) {
-        if (attempt === retries) throw e;
+        const isLast = attempt === retries;
+        if (isLast) throw e;
         await new Promise((r) => setTimeout(r, delayMs * (attempt + 1)));
       }
     }
   }, []);
 
-  // Hàm gọi RPC P-Chain DÙNG CHUNG cho mọi nơi: thử lần lượt từng URL trong P_CHAIN_RPC_URLS, mỗi URL
-  // retry vài lần cho mọi lỗi mạng. Nếu response có field "error" (lỗi tầng logic) thì ném lỗi luôn.
+  // ============================================================================
+  // FIX #4 (tiếp) — Hàm gọi RPC P-Chain DÙNG CHUNG cho mọi nơi trong file (thay vì mỗi chỗ tự
+  // viết fetch() riêng, chỗ có retry chỗ không). Tự động:
+  //  1. Thử lần lượt từng URL trong P_CHAIN_RPC_URLS (hiện chỉ có 1, xem ghi chú ở khai báo mảng).
+  //  2. Với mỗi URL, retry vài lần qua withRetry429 — áp dụng cho MỌI lỗi mạng (429, 503, CORS-do-
+  //     503-thiếu-header, timeout...), không chỉ riêng 429 như tên hàm gợi ý.
+  //  3. Nếu response trả về nhưng có field "error" (RPC lỗi ở tầng logic, không phải mạng) thì
+  //     ném lỗi luôn, không cần thử lại (retry cũng không giúp ích vì lỗi không phải tạm thời).
+  // Nếu tất cả URL đều lỗi, ném lỗi cuối cùng để nơi gọi tự quyết định fallback UI (vd: chuyển sang
+  // chọn thủ công validator).
+  // ============================================================================
   const fetchPChainRPC = useCallback(async (method, params, retryOpts = {}) => {
     const { retries = 2, delayMs = 1500 } = retryOpts;
     let lastErr = null;
@@ -535,22 +466,30 @@ export default function FlarePortal() {
     throw lastErr || new Error("Tất cả P-Chain RPC endpoint đều lỗi");
   }, [withRetry429]);
 
-  // Bước gác cổng: platform.getStake trả gần như ngay tổng FLR đang stake của địa chỉ này. Nếu = 0 thì
-  // chắc chắn chưa từng stake -> khỏi dò cache, khỏi quét mạng. Không cho biết nodeID/endTime từng khoản.
+  // ============================================================================
+  // FIX #2 — Bước gác cổng bằng platform.getStake trước khi làm bất cứ điều gì tốn kém.
+  // 1 request duy nhất tới RPC gốc, trả lời gần như ngay lập tức tổng số FLR đang stake
+  // của địa chỉ này. Nếu = 0 thì chắc chắn ví chưa từng stake -> khỏi cần dò cache,
+  // khỏi cần quét mạng, khỏi cần hiện ô "chọn thủ công validator".
+  // Không cho biết nodeID/endTime từng khoản (những thứ đó nằm trong output UTXO mã hoá),
+  // nên chỉ dùng để QUYẾT ĐỊNH có cần dò tiếp hay không, không thay thế được đường chi tiết bên dưới.
+  // ============================================================================
   const checkTotalStaked = useCallback(async (pAddress) => {
     const data = await fetchPChainRPC("platform.getStake", { addresses: [`P-${pAddress}`], validatorsOnly: false });
     return BigInt(data?.result?.staked || "0");
   }, [fetchPChainRPC]);
 
   const refreshMyStakes = useCallback(async (publicKeyOverride) => {
-    // Khi dùng làm onClick, tham số đầu là event -> chỉ nhận chuỗi
-    const publicKey = typeof publicKeyOverride === "string" ? publicKeyOverride : pChainPublicKey;
+    const publicKey = publicKeyOverride || pChainPublicKey;
     if (!publicKey) return;
     setStakesLoading(true);
     setStakesError(false);
     try {
       const pAddress = FLR_NETWORK.getPAddress(publicKey);
 
+      // BƯỚC GÁC CỔNG — xem ghi chú ở checkTotalStaked phía trên.
+      // Không bọc thêm withRetry429 ở đây nữa: checkTotalStaked -> fetchPChainRPC đã tự retry rồi,
+      // bọc thêm 1 lớp nữa chỉ khiến số lần thử nhân lên không cần thiết khi RPC lỗi dài hạn (vd 503).
       let totalStakedWei = null;
       try {
         totalStakedWei = await checkTotalStaked(pAddress);
@@ -563,10 +502,19 @@ export default function FlarePortal() {
         return;
       }
 
-      // platform.getCurrentValidators chỉ trả danh sách "delegators" chi tiết khi chỉ định ĐÚNG MỘT nodeID
-      // ("If a single nodeID is provided, full delegators information is also returned"). Vì vậy phải gọi
-      // riêng từng nodeID để so khớp — chạy song song theo lô nhỏ và dừng ngay khi đã khớp đủ tổng FLR.
-      // Có cache nodeID để lần sau chỉ tra đúng các validator đó (1-2 request).
+      // ============================================================================
+      // FIX #6 — Bản FIX #5 trước đó SAI: gọi platform.getCurrentValidators cho CẢ SUBNET (không
+      // chỉ định nodeIDs cụ thể) khiến RPC KHÔNG trả về danh sách "delegators" chi tiết — tài liệu
+      // chính thức của Avalanche/Flare ghi rõ: "If a single nodeID is provided, full delegators
+      // information is also returned. Otherwise only delegators' number and total weight is
+      // returned." Đó là lý do dù ví thực sự có stake, vòng lặp so khớp vẫn luôn ra 0 kết quả.
+      // Sửa đúng: BẮT BUỘC gọi platform.getCurrentValidators RIÊNG cho từng nodeID (nodeIDs: [id])
+      // mới có delegators đầy đủ để so khớp — nhưng để không chậm như quét tuần tự, chạy SONG SONG
+      // theo từng lô nhỏ (CONCURRENCY), và dừng ngay khi đã khớp đủ tổng số FLR (so với bước gác
+      // cổng ở trên) thay vì quét hết toàn bộ validator.
+      // Có cache nodeID (ghi lại sau mỗi lần tìm thấy) để LẦN SAU chỉ cần tra đúng các validator đó
+      // (1-2 request) thay vì quét lại từ đầu.
+      // ============================================================================
       const matchValidatorEntry = (validator, out) => {
         // Trường hợp hiếm: chính bạn là validator (không phải delegator)
         const vAddrs = (validator.validationRewardOwner && validator.validationRewardOwner.addresses) || [];
@@ -595,14 +543,14 @@ export default function FlarePortal() {
       let cachedNodeIds = [];
       try {
         cachedNodeIds = JSON.parse(localStorage.getItem(stakeNodeCacheKey(pAddress)) || "[]");
-        if (!Array.isArray(cachedNodeIds)) cachedNodeIds = [];
       } catch {
         cachedNodeIds = [];
       }
 
       const found = [];
 
-      // ĐƯỜNG NHANH: đã có cache -> tra thẳng đúng các validator đó (song song).
+      // ĐƯỜNG NHANH: đã có cache từ lần trước -> tra thẳng đúng các validator đó (song song, mỗi
+      // validator 1 request CÓ nodeIDs cụ thể nên chắc chắn có delegators để so khớp).
       if (cachedNodeIds.length > 0) {
         const results = await Promise.all(
           cachedNodeIds.map((nodeId) =>
@@ -614,12 +562,11 @@ export default function FlarePortal() {
         }
       }
 
-      // ĐƯỜNG ĐẦY ĐỦ: cache trống hoặc chưa khớp đủ số FLR -> quét các validator còn lại theo lô song song,
-      // dừng ngay khi đã khớp đủ tổng FLR hoặc hết thời gian cho phép.
-      if (totalStakedWei != null ? sumWei(found) < totalStakedWei : found.length === 0) {
+      // ĐƯỜNG ĐẦY ĐỦ: cache trống hoặc không còn khớp đủ số FLR (validator đổi khác) -> quét các
+      // validator đang active còn lại, theo lô song song, dừng ngay khi đã khớp đủ tổng số FLR.
+      if (sumWei(found) < totalStakedWei) {
         const SCAN_TIMEOUT_MS = 20000;
         const CONCURRENCY = 6;
-        let scanTimer;
         try {
           await Promise.race([
             (async () => {
@@ -627,8 +574,7 @@ export default function FlarePortal() {
               const remainingIds = (listData?.result?.validators || [])
                 .map((v) => v.nodeID)
                 .filter((id) => !cachedNodeIds.includes(id));
-              for (let i = 0; i < remainingIds.length; i += CONCURRENCY) {
-                if (totalStakedWei != null && sumWei(found) >= totalStakedWei) break;
+              for (let i = 0; i < remainingIds.length && sumWei(found) < totalStakedWei; i += CONCURRENCY) {
                 const batch = remainingIds.slice(i, i + CONCURRENCY);
                 const results = await Promise.all(
                   batch.map((nodeId) =>
@@ -640,15 +586,14 @@ export default function FlarePortal() {
                 }
               }
             })(),
-            new Promise((_, reject) => {
-              scanTimer = setTimeout(() => reject(new Error(`quét toàn bộ validator chưa xong sau ${SCAN_TIMEOUT_MS / 1000}s`)), SCAN_TIMEOUT_MS);
-            })
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`quét toàn bộ validator chưa xong sau ${SCAN_TIMEOUT_MS / 1000}s`)), SCAN_TIMEOUT_MS)
+            )
           ]);
         } catch (raceErr) {
-          // Hết giờ quét: vẫn dùng những gì đã tìm được tới lúc đó
+          // Hết giờ quét: vẫn dùng những gì đã tìm được tới lúc đó (found đã được cập nhật dần trong
+          // lúc quét), không vứt bỏ toàn bộ kết quả chỉ vì chưa quét xong 100% danh sách.
           console.warn("Quét validator chưa xong trong thời gian cho phép, dùng kết quả tìm được đến hiện tại:", raceErr);
-        } finally {
-          clearTimeout(scanTimer);
         }
       }
 
@@ -664,16 +609,18 @@ export default function FlarePortal() {
         const nodeIds = [...new Set(parsed.map((s) => s.nodeId))];
         localStorage.setItem(stakeNodeCacheKey(pAddress), JSON.stringify(nodeIds));
       } catch {
-        /* localStorage không khả dụng — bỏ qua cache */
+        /* localStorage không khả dụng — bỏ qua cache, lần sau lại quét đầy đủ */
       }
 
-      // Ví CÓ stake nhưng chưa khớp đủ -> hiện ô chọn thủ công để không "mất dấu" khoản stake.
-      if (totalStakedWei != null && sumWei(found) < totalStakedWei) {
+      // Ví CÓ stake (bước gác cổng xác nhận) nhưng chưa khớp đủ (quét chưa xong, hoặc validator đã
+      // rớt khỏi active set) -> hiện ô chọn thủ công để không "mất dấu" khoản stake.
+      if (sumWei(found) < totalStakedWei) {
         console.warn("Chưa khớp đủ tổng số FLR đang stake với các validator hiện có (có thể quét chưa xong hoặc validator đã rớt khỏi active set).");
         setStakesError(true);
       }
     } catch (e) {
-      // Trạng thái đã được UI xử lý (ô chọn thủ công validator sẽ hiện ra) -> chỉ cần cảnh báo
+      // Đây là trạng thái đã được UI xử lý (ô chọn thủ công validator sẽ hiện ra),
+      // không phải lỗi nghiêm trọng -> dùng console.warn thay vì console.error.
       console.warn("Không tự động dò được stake (sẽ chuyển sang chọn thủ công):", e);
       setStakesError(true);
     } finally {
@@ -681,14 +628,14 @@ export default function FlarePortal() {
     }
   }, [pChainPublicKey, stakeNodeCacheKey, checkTotalStaked, fetchPChainRPC]);
 
-  // Cho phép người dùng tự xác định validator đã stake khi không thể tự động dò ra — ghi thẳng vào cache
-  // rồi tải lại theo đường nhanh.
+  // Cho phép người dùng tự xác định validator đã stake trước đây khi không thể tự động dò ra
+  // (quét toàn mạng qua RPC công khai quá chậm/hay timeout) — ghi thẳng vào cache rồi tải lại theo đường nhanh.
   const handleIdentifyKnownValidator = useCallback((nodeId) => {
     if (!pChainAddress) return;
     try {
       const key = stakeNodeCacheKey(pChainAddress);
       const existing = JSON.parse(localStorage.getItem(key) || "[]");
-      const merged = [...new Set([...(Array.isArray(existing) ? existing : []), nodeId])];
+      const merged = [...new Set([...existing, nodeId])];
       localStorage.setItem(key, JSON.stringify(merged));
     } catch {
       /* localStorage không khả dụng */
@@ -730,6 +677,8 @@ export default function FlarePortal() {
   const fetchValidators = useCallback(async () => {
     setLoadingValidators(true);
     try {
+      // FIX #4 (tiếp) — dùng fetchPChainRPC thay vì fetch() trực tiếp: có retry qua nhiều lần thử
+      // và (nếu sau này thêm) tự chuyển sang endpoint dự phòng khi flare-api.flare.network lỗi 503.
       const [data, csvRes] = await Promise.all([
         fetchPChainRPC("platform.getCurrentValidators", { subnetID: PRIMARY_SUBNET_ID }),
         fetch(VALIDATOR_NAMES_URL).catch(() => null)
@@ -749,9 +698,16 @@ export default function FlarePortal() {
       const list = (data?.result?.validators || [])
         .filter((v) => v.connected)
         .map((v) => {
-          // "weight" từ platform.getCurrentValidators là TỔNG trọng số (self-bond + toàn bộ FLR đã delegate),
-          // không phải riêng self-bond. Phải trừ delegatedFLR ra mới ra self-bond thật, rồi mới tính cap;
-          // nếu không freeSpace bị tính "ảo" cao và tx thật sẽ bị từ chối "validator would be over delegated".
+          // ============================================================================
+          // FIX #3 — "weight" trả về từ platform.getCurrentValidators là TỔNG trọng số
+          // của validator (self-bond + toàn bộ FLR đã được delegate vào), KHÔNG PHẢI riêng
+          // phần self-bond. Trước đây code lấy thẳng v.weight làm selfBondFLR, khiến cap
+          // (= selfBond * 15) bị tính "ảo" cao dần theo chính lượng người khác đã delegate —
+          // dẫn tới freeSpace hiển thị nhiều hơn thực tế. Client cho qua bước kiểm tra
+          // overCap, nhưng khi tx thật lên P-Chain thì bị validator engine từ chối với lỗi
+          // "validator would be over delegated" (xem console log đã xác nhận).
+          // Sửa: trừ delegatedFLR ra khỏi weight để lấy đúng self-bond thật, rồi mới tính cap.
+          // ============================================================================
           const totalWeightFLR = Number(v.weight || 0) / 1e9;
           const delegatedFLR = Number(v.delegatorWeight || 0) / 1e9;
           const selfBondFLR = Math.max(totalWeightFLR - delegatedFLR, 0);
@@ -923,17 +879,13 @@ export default function FlarePortal() {
         disconnect();
         return;
       }
-      try {
-        const addr = newAccs[0];
-        setAccount(addr);
-        const p = new ethers.BrowserProvider(window.ethereum);
-        const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
-        const pda = await csm.accountToDelegationAccount(addr);
-        setPdaAddress(pda);
-        refreshData(addr, pda, p);
-      } catch (e) {
-        console.error("Lỗi khi đổi tài khoản ví:", e);
-      }
+      const addr = newAccs[0];
+      setAccount(addr);
+      const p = new ethers.BrowserProvider(window.ethereum);
+      const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
+      const pda = await csm.accountToDelegationAccount(addr);
+      setPdaAddress(pda);
+      refreshData(addr, pda, p);
     };
     const handleChainChanged = () => window.location.reload();
     window.ethereum.on("accountsChanged", handleAccountsChanged);
@@ -948,6 +900,8 @@ export default function FlarePortal() {
   useEffect(() => {
     let blockTimeOffset = 0;
     let isMounted = true;
+    let timerInterval;
+    let syncInterval;
 
     const updateTimerUI = () => {
       const currentNetworkSeconds = Math.floor((Date.now() + blockTimeOffset) / 1000);
@@ -980,8 +934,8 @@ export default function FlarePortal() {
     };
 
     syncBlockTime();
-    const timerInterval = setInterval(updateTimerUI, 1000);
-    const syncInterval = setInterval(syncBlockTime, 3 * 60 * 1000);
+    timerInterval = setInterval(updateTimerUI, 1000);
+    syncInterval = setInterval(syncBlockTime, 3 * 60 * 1000);
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") syncBlockTime();
@@ -1012,12 +966,14 @@ export default function FlarePortal() {
   }, [account, walletType]);
 
   // Reward staking phát sinh liên tục trên chain — kiểm tra lại định kỳ để nút Claim tự hiện ra.
-  // KHÔNG gộp refreshMyStakes vào đây để tránh đụng rate-limit của RPC công khai; người dùng bấm nút
-  // làm mới thủ công nếu cần.
+  // KHÔNG gộp refreshMyStakes vào đây: dù giờ đã dùng 1 bulk request thay vì SDK getStakesOnP chậm
+  // (xem FIX #5), lặp mỗi 60s vẫn không cần thiết và dễ đụng rate-limit của RPC công khai hơn mức cần.
+  // Chỉ gọi refreshMyStakes lúc kết nối ví (initPChain) và sau khi stake/rút — người dùng bấm nút
+  // làm mới thủ công nếu cần xem lại.
   useEffect(() => {
     if (!account || !walletType) return;
     refreshClaimableStakingReward();
-    const interval = setInterval(() => refreshClaimableStakingReward(), 60_000);
+    const interval = setInterval(refreshClaimableStakingReward, 60_000);
     return () => clearInterval(interval);
   }, [account, walletType, refreshClaimableStakingReward]);
 
@@ -1121,34 +1077,21 @@ export default function FlarePortal() {
       setShowConnectModal(false);
       await modal.open({ view: "Connect" });
 
-      // Chờ người dùng quét QR xong; có giới hạn thời gian và bắt lỗi để không lặp vô hạn
-      const startedAt = Date.now();
-      const WAIT_LIMIT_MS = 3 * 60 * 1000;
       const checkConnection = setInterval(async () => {
-        if (Date.now() - startedAt > WAIT_LIMIT_MS) {
-          clearInterval(checkConnection);
-          setStatus(t("statusEllipalFailed"));
-          return;
-        }
         if (!modal.getIsConnected()) return;
         clearInterval(checkConnection);
-        try {
-          const p = new ethers.BrowserProvider(modal.getWalletProvider());
-          const signer = await p.getSigner();
-          const addr = await signer.getAddress();
-          setWalletType("walletconnect");
-          setCustomEthersProvider(p);
-          setAccount(addr);
+        const p = new ethers.BrowserProvider(modal.getWalletProvider());
+        const signer = await p.getSigner();
+        const addr = await signer.getAddress();
+        setWalletType("walletconnect");
+        setCustomEthersProvider(p);
+        setAccount(addr);
 
-          const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
-          const pda = await csm.accountToDelegationAccount(addr);
-          setPdaAddress(pda);
-          setStatus(t("statusEllipalConnected"));
-          setTimeout(() => refreshData(addr, pda, p), 200);
-        } catch (err) {
-          console.error("Lỗi kết nối Ellipal:", err);
-          setStatus(t("statusEllipalFailed"));
-        }
+        const csm = new ethers.Contract(CLAIM_SETUP_MANAGER, ABI.csm, p);
+        const pda = await csm.accountToDelegationAccount(addr);
+        setPdaAddress(pda);
+        setStatus(t("statusEllipalConnected"));
+        setTimeout(() => refreshData(addr, pda, p), 200);
       }, 1000);
     } catch {
       setStatus(t("statusEllipalFailed"));
@@ -1294,8 +1237,9 @@ export default function FlarePortal() {
       return setStatus(t("statusMinPerValidator", { min: MIN_STAKE_FLR.toLocaleString(), per: perValidator.toLocaleString() }));
     }
 
-    // Chừa biên an toàn: freeSpace vẫn có thể lệch nhẹ so với thời điểm tx thật được xác nhận
-    // (người khác delegate chen vào), nên chỉ cho dùng tối đa 98% freeSpace hiện có.
+    // Chừa biên an toàn thay vì so sánh sát nút: freeSpace vẫn có thể lệch nhẹ so với thời điểm
+    // thực thi thật trên chain (người khác delegate chen vào giữa lúc fetch và lúc tx confirm),
+    // nên chỉ cho phép dùng tối đa 98% freeSpace hiện có.
     const CAP_SAFETY_MARGIN = 0.98;
     const overCap = freshStakeProviders.find((v) => v.freeSpace != null && perValidator > v.freeSpace * CAP_SAFETY_MARGIN);
     if (overCap) {
@@ -1314,8 +1258,8 @@ export default function FlarePortal() {
       const wallet = await getPChainWallet();
 
       for (const validator of freshStakeProviders) {
-        // Tính startTime ngay trước mỗi lần gọi (mỗi lần ký có thể mất vài chục giây);
-        // buffer 5 phút để startTime không trôi qua trước khi giao dịch lên mạng.
+        // Tính startTime ngay trước mỗi lần gọi (không phải 1 lần trước vòng lặp), vì mỗi lần ký có thể mất
+        // vài chục giây; buffer 5 phút để tránh startTime trôi qua trước khi giao dịch lên mạng.
         const startTime = Math.floor(Date.now() / 1000) + 5 * 60;
         const endTime = startTime + days * 24 * 60 * 60;
         await FLR_NETWORK.delegateOnP(wallet, Amount.nats(perValidator), validator.nodeID, startTime, endTime);
@@ -1323,12 +1267,12 @@ export default function FlarePortal() {
 
       setStakeAmount("");
       setStatus(t("statusStakeSuccess"));
-      // Ghi ngay nodeID vừa stake vào cache để lần refresh tới không phải quét lại toàn mạng
+      // Ghi ngay nodeID vừa stake vào cache, để lần refresh tới không phải quét lại toàn mạng mới nhận ra
       if (pChainAddress) {
         try {
           const key = stakeNodeCacheKey(pChainAddress);
           const existing = JSON.parse(localStorage.getItem(key) || "[]");
-          const merged = [...new Set([...(Array.isArray(existing) ? existing : []), ...freshStakeProviders.map((v) => v.nodeID)])];
+          const merged = [...new Set([...existing, ...freshStakeProviders.map((v) => v.nodeID)])];
           localStorage.setItem(key, JSON.stringify(merged));
         } catch {
           /* bỏ qua nếu localStorage không khả dụng */
@@ -1399,11 +1343,6 @@ export default function FlarePortal() {
     Number(balances.flr) + Number(balances.wflr) + Number(balances.pdaWflr) +
     Number(stakedAmount) + Number(pChainBalance) +
     Number(claimableStakingReward) + Number(mainWalletFtsoReward);
-
-  // Bản tin dự phòng (2 câu ngắn) khi chưa lấy được tin sống
-  const fallbackNews = lang === "vi"
-    ? "FlareCat (FCAT) trên Flare tự động trả thưởng FXRP cho người nắm giữ, không cần stake hay claim. Mỗi giao dịch chịu phí 3%, trong đó 80% chia cho ví giữ từ 100.000 FCAT; đây là memecoin, rủi ro cao."
-    : "FlareCat (FCAT) on Flare automatically pays holders in FXRP, with no staking or claiming. Every trade carries a 3% fee, 80% of which goes to wallets holding 100,000+ FCAT; this is a memecoin, so risk is high.";
 
   // ============================================================================
   // RENDER
@@ -1564,35 +1503,10 @@ export default function FlarePortal() {
 
       <div style={styles.tickerWrap}>
         <div style={styles.ticker}>
-          {/* Bản tin ở đầu thanh cuộn: tin sống (tiêu đề + nguồn, bấm mở bài gốc), dự phòng bằng tin tĩnh.
-              Tiêu đề render dưới dạng text của React, không dùng dangerouslySetInnerHTML. */}
-          <span style={{ ...styles.assetPrice, color: COLORS.AMBER, marginRight: 28, whiteSpace: "nowrap" }}>
-            📰{" "}
-            {liveNews.length > 0
-              ? liveNews.map((n, i) => (
-                <React.Fragment key={n.link}>
-                  <a href={n.link} target="_blank" rel="noopener noreferrer" style={{ color: "inherit", textDecoration: "none" }}>
-                    {n.title} <small style={{ opacity: 0.7 }}>({n.source})</small>
-                  </a>
-                  {i < liveNews.length - 1 && " · "}
-                </React.Fragment>
-              ))
-              : fallbackNews}
-          </span>
-
           <span style={{ ...styles.assetName, color: "#F7931A" }}>BTC</span><span style={styles.assetPrice}>${prices.btc.toLocaleString()}</span>
           <span style={{ ...styles.assetName, color: "#627EEA" }}>ETH</span><span style={styles.assetPrice}>${prices.eth.toLocaleString()}</span>
           <span style={{ ...styles.assetName, color: "#23292F", background: "#fff", padding: "2px 4px", borderRadius: "3px" }}>XRP</span><span style={styles.assetPrice}>${prices.xrp}</span>
           <span style={{ ...styles.assetName, color: COLORS.PINK }}>FLR</span><span style={styles.assetPrice}>${prices.flr}</span>
-          <span style={{ ...styles.assetName, color: FCAT_COLOR }}>FCAT</span>
-          <span style={styles.assetPrice}>
-            ${formatTinyPrice(fcat.price)}
-            {fcat.change24h !== 0 && (
-              <small style={{ marginLeft: 4, color: fcat.change24h >= 0 ? COLORS.PRICE_GREEN : "#ff4444" }}>
-                {fcat.change24h >= 0 ? "▲" : "▼"}{Math.abs(fcat.change24h).toFixed(1)}%
-              </small>
-            )}
-          </span>
           <span style={{ ...styles.assetName, color: "#00ADEF" }}>SGB</span><span style={styles.assetPrice}>${prices.sgb}</span>
           <span style={{ ...styles.assetName, color: "#345D9D" }}>LTC</span><span style={styles.assetPrice}>${prices.ltc}</span>
           <span style={{ ...styles.assetName, color: "#C2A633" }}>DOGE</span><span style={styles.assetPrice}>${prices.doge}</span>
@@ -1616,8 +1530,9 @@ export default function FlarePortal() {
               {lang === "vi" ? "TỔNG TÀI SẢN FLR (VÍ + PDA + PCHAIN)" : "TOTAL FLR HOLDINGS (WALLET + PDA + PCHAIN)"}
             </div>
 
-            {/* LIVE FLR PRICE TAG — dùng đúng prices.flr (nguồn toUSD() bên dưới cũng dùng), nhịp theo mỗi lần
-                poll CoinGecko (60s). Flash xanh/đỏ 1.2s khi giá vừa đổi, rồi trở lại màu vàng gold mặc định. */}
+            {/* LIVE FLR PRICE TAG — dùng đúng prices.flr (nguồn toUSD() bên dưới cũng dùng), nhịp
+                theo mỗi lần poll CoinGecko (60s). Flash xanh/đỏ 1.2s khi giá vừa đổi, rồi trở lại
+                màu vàng gold mặc định — không gây nhiễu mắt nếu để tab mở lâu. */}
             <div style={{
               display: "inline-flex", alignItems: "center", gap: 8,
               background: "#0a0a0a",
@@ -1804,8 +1719,8 @@ export default function FlarePortal() {
                       {stakesLoading && myStakes.length === 0 && (
                         <div style={{ textAlign: "center", fontSize: 11, color: COLORS.TEXT_MUTE, padding: "10px 0" }}>
                           {lang === "vi"
-                            ? "Đang kiểm tra stake... (nhanh nếu chưa từng stake, tối đa 20s nếu cần dò chi tiết)"
-                            : "Checking stake status... (fast if you've never staked, up to 20s if a detailed scan is needed)"}
+                            ? "Đang kiểm tra stake... (nhanh nếu chưa từng stake, tối đa 12s nếu cần dò chi tiết)"
+                            : "Checking stake status... (fast if you've never staked, up to 12s if a detailed scan is needed)"}
                         </div>
                       )}
 
